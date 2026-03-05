@@ -6,6 +6,11 @@ export default {
   ],
   darkMode: "class",
   theme: {
+    container: {
+      center: true,
+      padding: "2rem",
+      screens: { "2xl": "1400px" },
+    },
     extend: {
       fontFamily: {
         sans: [
@@ -17,9 +22,54 @@ export default {
           "Pretendard",
           "sans-serif",
         ],
+        mono: [
+          "SF Mono",
+          "Cascadia Mono",
+          "Fira Code",
+          "Consolas",
+          "monospace",
+        ],
       },
       colors: {
-        // Paper (light) theme
+        // shadcn/ui semantic tokens (backed by CSS variables)
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+        },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          foreground: "hsl(var(--warning-foreground))",
+        },
+        // Tybre design tokens (Paper/Ink — referenced directly for editor)
         paper: {
           bg: "#FAFAF8",
           surface: "#F0EFEB",
@@ -28,7 +78,6 @@ export default {
           muted: "#9B9B97",
           accent: "#4A7FBF",
         },
-        // Ink (dark) theme
         ink: {
           bg: "#1C1C1E",
           surface: "#2C2C2E",
@@ -38,12 +87,27 @@ export default {
           accent: "#6BA3D6",
         },
       },
+      borderRadius: {
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
+      },
       maxWidth: {
         editor: "800px",
       },
-      transitionDuration: {
-        150: "150ms",
-        200: "200ms",
+      keyframes: {
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
+        },
+      },
+      animation: {
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
       },
     },
   },

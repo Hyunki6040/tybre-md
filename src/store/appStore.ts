@@ -8,36 +8,40 @@ export interface Tab {
   isDirty: boolean;
 }
 
+export interface FileEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children?: FileEntry[];
+}
+
 export type Theme = "paper" | "ink" | "system";
 export type View = "editor" | "terminal";
 
 interface AppState {
-  // Tabs
   tabs: Tab[];
   activeTabId: string | null;
+  closedTabs: Tab[]; // Cmd+Shift+T restore stack (max 10)
 
-  // Sidebar
   sidebarVisible: boolean;
   sidebarWidth: number;
+  fileTree: FileEntry | null; // shared for QuickOpen access
 
-  // Theme
   theme: Theme;
   resolvedTheme: "paper" | "ink";
 
-  // View
   view: View;
-
-  // Quick open
   quickOpenVisible: boolean;
 
-  // Actions
   addTab: (tab: Tab) => void;
   closeTab: (tabId: string) => void;
+  restoreLastTab: () => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   markTabSaved: (tabId: string) => void;
 
   toggleSidebar: () => void;
+  setFileTree: (tree: FileEntry | null) => void;
   setTheme: (theme: Theme) => void;
   setResolvedTheme: (theme: "paper" | "ink") => void;
   toggleView: () => void;
@@ -51,7 +55,6 @@ function generateTabId(): string {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  // Initial state
   tabs: [
     {
       id: generateTabId(),
@@ -62,18 +65,18 @@ export const useAppStore = create<AppState>((set) => ({
     },
   ],
   activeTabId: null,
+  closedTabs: [],
 
   sidebarVisible: true,
   sidebarWidth: 240,
+  fileTree: null,
 
   theme: "system",
   resolvedTheme: "paper",
 
   view: "editor",
-
   quickOpenVisible: false,
 
-  // Tab actions
   addTab: (tab) => {
     set((state) => ({
       tabs: [...state.tabs, tab],
@@ -84,19 +87,34 @@ export const useAppStore = create<AppState>((set) => ({
   closeTab: (tabId) => {
     set((state) => {
       const idx = state.tabs.findIndex((t) => t.id === tabId);
+      const closing = state.tabs[idx];
       const newTabs = state.tabs.filter((t) => t.id !== tabId);
       let newActiveId = state.activeTabId;
 
       if (state.activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          // Activate previous tab or next if at start
-          newActiveId = newTabs[Math.max(0, idx - 1)].id;
-        } else {
-          newActiveId = null;
-        }
+        newActiveId = newTabs.length > 0 ? newTabs[Math.max(0, idx - 1)].id : null;
       }
 
-      return { tabs: newTabs, activeTabId: newActiveId };
+      // Push to closed stack (max 10)
+      const newClosed = closing
+        ? [closing, ...state.closedTabs].slice(0, 10)
+        : state.closedTabs;
+
+      return { tabs: newTabs, activeTabId: newActiveId, closedTabs: newClosed };
+    });
+  },
+
+  restoreLastTab: () => {
+    set((state) => {
+      if (state.closedTabs.length === 0) return state;
+      const [last, ...rest] = state.closedTabs;
+      // Give it a fresh ID to avoid collision
+      const restored = { ...last, id: `tab-${Date.now()}` };
+      return {
+        tabs: [...state.tabs, restored],
+        activeTabId: restored.id,
+        closedTabs: rest,
+      };
     });
   },
 
@@ -120,12 +138,14 @@ export const useAppStore = create<AppState>((set) => ({
     }));
   },
 
-  // Sidebar
   toggleSidebar: () => {
     set((state) => ({ sidebarVisible: !state.sidebarVisible }));
   },
 
-  // Theme
+  setFileTree: (tree) => {
+    set({ fileTree: tree });
+  },
+
   setTheme: (theme) => {
     set({ theme });
   },
@@ -142,14 +162,12 @@ export const useAppStore = create<AppState>((set) => ({
     set({ resolvedTheme });
   },
 
-  // View toggle (editor ↔ terminal)
   toggleView: () => {
     set((state) => ({
       view: state.view === "editor" ? "terminal" : "editor",
     }));
   },
 
-  // Quick open
   setQuickOpenVisible: (visible) => {
     set({ quickOpenVisible: visible });
   },

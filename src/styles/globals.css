@@ -2,114 +2,198 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ==========================================
-   Design System: Paper (light) + Ink (dark)
-   ========================================== */
+/* ============================================================
+   shadcn/ui CSS Variables — Paper (light) + Ink (dark)
+   Color values are HSL without the hsl() wrapper.
+   ============================================================ */
 
-:root {
-  /* Paper theme (light) */
-  --bg: #FAFAF8;
-  --bg-surface: #F0EFEB;
-  --bg-overlay: rgba(250, 250, 248, 0.95);
-  --border: #E0DED8;
-  --text: #2C2C2C;
-  --text-muted: #9B9B97;
-  --text-faint: #C4C3BE;
-  --accent: #4A7FBF;
-  --accent-hover: #3D6EA8;
-  --accent-dim: rgba(74, 127, 191, 0.12);
-  --code-bg: #EDEDEB;
-  --selection: rgba(74, 127, 191, 0.2);
+@layer base {
+  :root {
+    /* ── Paper (light) theme ── */
+    --background: 60 20% 98%;        /* #FAFAF8 */
+    --foreground: 0 0% 17%;          /* #2C2C2C */
 
-  /* Typography */
-  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Pretendard, sans-serif;
-  --font-mono: "SF Mono", "Cascadia Mono", "Fira Code", "Consolas", monospace;
-  --font-size-base: 16px;
-  --line-height: 1.75;
+    --card: 60 20% 98%;
+    --card-foreground: 0 0% 17%;
 
-  /* Spacing */
-  --editor-max-width: 800px;
-  --editor-padding-h: 32px;
+    --popover: 60 20% 98%;
+    --popover-foreground: 0 0% 17%;
 
-  /* Transitions */
-  --transition-fast: 150ms ease-out;
-  --transition-normal: 200ms ease-out;
+    --primary: 210 43% 52%;          /* #4A7FBF */
+    --primary-foreground: 0 0% 100%;
 
-  /* Sidebar */
-  --sidebar-width: 240px;
-}
+    --secondary: 45 14% 93%;         /* #F0EFEB */
+    --secondary-foreground: 0 0% 17%;
 
-/* Dark (Ink) theme */
-.dark {
-  --bg: #1C1C1E;
-  --bg-surface: #2C2C2E;
-  --bg-overlay: rgba(28, 28, 30, 0.95);
-  --border: #3A3A3C;
-  --text: #E4E4E4;
-  --text-muted: #8E8E93;
-  --text-faint: #5A5A5F;
-  --accent: #6BA3D6;
-  --accent-hover: #5990C3;
-  --accent-dim: rgba(107, 163, 214, 0.15);
-  --code-bg: #2C2C2E;
-  --selection: rgba(107, 163, 214, 0.25);
-}
+    --muted: 45 14% 93%;             /* #F0EFEB */
+    --muted-foreground: 90 1% 61%;   /* #9B9B97 */
 
-/* System preference auto-detection */
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
+    --accent: 45 14% 93%;
+    --accent-foreground: 0 0% 17%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 45 10% 86%;            /* #E0DED8 */
+    --input: 45 10% 86%;
+    --ring: 210 43% 52%;             /* #4A7FBF */
+
+    --warning: 35 62% 53%;           /* #D4943A */
+    --warning-foreground: 0 0% 100%;
+
+    --radius: 0.5rem;
+
+    /* ── Tybre custom properties (editor, sidebar, etc.) ── */
+    --bg: #FAFAF8;
+    --bg-surface: #F0EFEB;
+    --bg-overlay: rgba(250, 250, 248, 0.95);
+    --text: #2C2C2C;
+    --text-muted: #9B9B97;
+    --text-faint: #C4C3BE;
+    --tybre-accent: #4A7FBF;
+    --tybre-accent-hover: #3D6EA8;
+    --tybre-accent-dim: rgba(74, 127, 191, 0.12);
+    --code-bg: #EDEDEB;
+    --selection: rgba(74, 127, 191, 0.2);
+
+    --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Pretendard, sans-serif;
+    --font-mono: "SF Mono", "Cascadia Mono", "Fira Code", "Consolas", monospace;
+    --font-size-base: 16px;
+    --line-height: 1.75;
+
+    --editor-max-width: 800px;
+    --editor-padding-h: 32px;
+
+    --transition-fast: 150ms ease-out;
+    --transition-normal: 200ms ease-out;
+
+    --sidebar-width: 240px;
+  }
+
+  .dark {
+    /* ── Ink (dark) theme ── */
+    --background: 240 3% 11%;        /* #1C1C1E */
+    --foreground: 0 0% 89%;          /* #E4E4E4 */
+
+    --card: 240 2% 18%;              /* #2C2C2E */
+    --card-foreground: 0 0% 89%;
+
+    --popover: 240 3% 11%;
+    --popover-foreground: 0 0% 89%;
+
+    --primary: 210 56% 63%;          /* #6BA3D6 */
+    --primary-foreground: 240 3% 11%;
+
+    --secondary: 240 2% 18%;         /* #2C2C2E */
+    --secondary-foreground: 0 0% 89%;
+
+    --muted: 240 2% 18%;
+    --muted-foreground: 240 2% 56%;  /* #8E8E93 */
+
+    --accent: 240 2% 18%;
+    --accent-foreground: 0 0% 89%;
+
+    --destructive: 0 62% 40%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 1% 23%;            /* #3A3A3C */
+    --input: 240 1% 23%;
+    --ring: 210 56% 63%;             /* #6BA3D6 */
+
+    --warning: 35 70% 58%;           /* #E09B4E */
+    --warning-foreground: 240 3% 11%;
+
+    /* ── Tybre custom properties (dark) ── */
     --bg: #1C1C1E;
     --bg-surface: #2C2C2E;
     --bg-overlay: rgba(28, 28, 30, 0.95);
-    --border: #3A3A3C;
     --text: #E4E4E4;
     --text-muted: #8E8E93;
     --text-faint: #5A5A5F;
-    --accent: #6BA3D6;
-    --accent-hover: #5990C3;
-    --accent-dim: rgba(107, 163, 214, 0.15);
+    --tybre-accent: #6BA3D6;
+    --tybre-accent-hover: #5990C3;
+    --tybre-accent-dim: rgba(107, 163, 214, 0.15);
     --code-bg: #2C2C2E;
     --selection: rgba(107, 163, 214, 0.25);
   }
+
+  /* System preference auto-detection */
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+      --background: 240 3% 11%;
+      --foreground: 0 0% 89%;
+      --card: 240 2% 18%;
+      --card-foreground: 0 0% 89%;
+      --popover: 240 3% 11%;
+      --popover-foreground: 0 0% 89%;
+      --primary: 210 56% 63%;
+      --primary-foreground: 240 3% 11%;
+      --secondary: 240 2% 18%;
+      --secondary-foreground: 0 0% 89%;
+      --muted: 240 2% 18%;
+      --muted-foreground: 240 2% 56%;
+      --accent: 240 2% 18%;
+      --accent-foreground: 0 0% 89%;
+      --destructive: 0 62% 40%;
+      --destructive-foreground: 0 0% 98%;
+      --border: 240 1% 23%;
+      --input: 240 1% 23%;
+      --ring: 210 56% 63%;
+      --warning: 35 70% 58%;
+      --warning-foreground: 240 3% 11%;
+      --bg: #1C1C1E;
+      --bg-surface: #2C2C2E;
+      --bg-overlay: rgba(28, 28, 30, 0.95);
+      --text: #E4E4E4;
+      --text-muted: #8E8E93;
+      --text-faint: #5A5A5F;
+      --tybre-accent: #6BA3D6;
+      --tybre-accent-hover: #5990C3;
+      --tybre-accent-dim: rgba(107, 163, 214, 0.15);
+      --code-bg: #2C2C2E;
+      --selection: rgba(107, 163, 214, 0.25);
+    }
+  }
 }
 
-/* ==========================================
-   Base Styles
-   ========================================== */
+/* ============================================================
+   Base Reset
+   ============================================================ */
 
-*, *::before, *::after {
-  box-sizing: border-box;
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-body);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+  }
+
+  .editor-area {
+    user-select: text;
+  }
+
+  ::selection {
+    background: var(--selection);
+  }
 }
 
-html, body, #root {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  font-family: var(--font-body);
-  font-size: var(--font-size-base);
-  line-height: var(--line-height);
-  color: var(--text);
-  background: var(--bg);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  user-select: none;
-}
-
-/* Allow selection inside editor */
-.editor-area {
-  user-select: text;
-}
-
-::selection {
-  background: var(--selection);
-}
-
-/* ==========================================
-   Milkdown Editor Styles
-   ========================================== */
+/* ============================================================
+   Milkdown Editor Typography
+   ============================================================ */
 
 .milkdown {
   width: 100%;
@@ -128,7 +212,6 @@ body {
   min-height: calc(100vh - 96px);
 }
 
-/* Headings */
 .milkdown h1, .milkdown h2, .milkdown h3,
 .milkdown h4, .milkdown h5, .milkdown h6 {
   margin: 1.5em 0 0.5em;
@@ -137,33 +220,28 @@ body {
   color: var(--text);
 }
 
-.milkdown h1 { font-size: 2em; margin-top: 0.75em; }
-.milkdown h2 { font-size: 1.5em; }
-.milkdown h3 { font-size: 1.25em; }
-.milkdown h4 { font-size: 1.1em; }
-.milkdown h5, .milkdown h6 { font-size: 1em; }
+/* Spec: H1=28px, H2=22px, H3=18px, H4=16px, H5/H6=14px at 16px base */
+.milkdown h1 { font-size: 1.75em; font-weight: 700; margin-top: 0.75em; }
+.milkdown h2 { font-size: 1.375em; font-weight: 600; }
+.milkdown h3 { font-size: 1.125em; font-weight: 600; }
+.milkdown h4 { font-size: 1em; font-weight: 600; color: var(--text-muted); }
+.milkdown h5, .milkdown h6 { font-size: 0.875em; color: var(--text-muted); }
 
-/* Paragraphs */
-.milkdown p {
-  margin: 0.75em 0;
-}
+.milkdown p { margin: 0.75em 0; }
 
-/* Bold / Italic */
 .milkdown strong { font-weight: 700; }
 .milkdown em { font-style: italic; }
 .milkdown del { text-decoration: line-through; color: var(--text-muted); }
 
-/* Blockquotes */
 .milkdown blockquote {
   margin: 1em 0;
   padding: 0.5em 1em;
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--tybre-accent);
   color: var(--text-muted);
-  background: var(--accent-dim);
+  background: var(--tybre-accent-dim);
   border-radius: 0 4px 4px 0;
 }
 
-/* Code */
 .milkdown code {
   font-family: var(--font-mono);
   font-size: 0.875em;
@@ -187,36 +265,28 @@ body {
   font-size: 0.875em;
 }
 
-/* Lists */
 .milkdown ul, .milkdown ol {
   padding-left: 1.75em;
   margin: 0.5em 0;
 }
 
-.milkdown li {
-  margin: 0.25em 0;
-}
+.milkdown li { margin: 0.25em 0; }
 
-/* Links */
 .milkdown a {
-  color: var(--accent);
+  color: var(--tybre-accent);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-color var(--transition-fast);
 }
 
-.milkdown a:hover {
-  border-bottom-color: var(--accent);
-}
+.milkdown a:hover { border-bottom-color: var(--tybre-accent); }
 
-/* Horizontal rule */
 .milkdown hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid hsl(var(--border));
   margin: 2em 0;
 }
 
-/* Tables */
 .milkdown table {
   width: 100%;
   border-collapse: collapse;
@@ -225,72 +295,53 @@ body {
 }
 
 .milkdown th, .milkdown td {
-  border: 1px solid var(--border);
+  border: 1px solid hsl(var(--border));
   padding: 8px 12px;
   text-align: left;
 }
 
 .milkdown th {
-  background: var(--bg-surface);
+  background: hsl(var(--muted));
   font-weight: 600;
 }
 
-.milkdown tr:hover td {
-  background: var(--accent-dim);
-}
+.milkdown tr:hover td { background: var(--tybre-accent-dim); }
 
-/* Task lists */
-.milkdown li[data-checked] {
-  list-style: none;
-  margin-left: -1.25em;
-}
-
-.milkdown li[data-checked] input[type="checkbox"] {
-  margin-right: 0.5em;
-  accent-color: var(--accent);
-}
-
-/* ==========================================
-   Syntax-Reveal Token Styles
-   The key PoC feature: tokens appear in muted
-   color when cursor is inside the block, and
-   hide (with transition) when cursor leaves.
-   ========================================== */
+/* ============================================================
+   Syntax-Reveal Token Styles (PoC core feature)
+   ============================================================ */
 
 .syntax-token {
   color: var(--text-faint);
   transition: opacity var(--transition-fast), color var(--transition-fast);
 }
 
-/* When heading is focused (cursor inside), show tokens */
 .heading-node.is-focused .syntax-token {
   opacity: 1;
   color: var(--text-muted);
 }
 
-/* When heading is unfocused, hide tokens */
 .heading-node:not(.is-focused) .syntax-token {
   opacity: 0;
-  /* Keep in DOM for cursor positioning */
   color: transparent;
 }
 
-/* ==========================================
-   Layout
-   ========================================== */
+/* ============================================================
+   App Layout
+   ============================================================ */
 
 .app-layout {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg);
+  background: hsl(var(--background));
 }
 
 .sidebar {
   width: var(--sidebar-width);
   flex-shrink: 0;
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border);
+  background: hsl(var(--muted));
+  border-right: 1px solid hsl(var(--border));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -311,49 +362,28 @@ body {
   min-width: 0;
 }
 
-.tab-bar {
-  display: flex;
-  align-items: center;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
-  height: 38px;
-  overflow-x: auto;
-  flex-shrink: 0;
-}
-
-.tab-bar::-webkit-scrollbar {
-  display: none;
-}
-
 .editor-container {
   flex: 1;
-  overflow-y: auto;
-  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: hsl(var(--background));
   position: relative;
 }
 
-.editor-area {
-  height: 100%;
+.milkdown-wrapper {
+  flex: 1;
+  overflow-y: auto;
 }
 
-/* ==========================================
+/* ============================================================
    Scrollbars
-   ========================================== */
+   ============================================================ */
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: hsl(var(--border));
   border-radius: 4px;
 }
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-faint);
-}
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
