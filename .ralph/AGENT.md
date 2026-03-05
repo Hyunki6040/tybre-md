@@ -2,48 +2,75 @@
 
 ## Project Setup
 ```bash
-# Install dependencies (example for Node.js project)
+# Install frontend dependencies
 npm install
 
-# Or for Python project
-pip install -r requirements.txt
-
-# Or for Rust project  
-cargo build
+# Install Tauri CLI globally (if needed)
+cargo install tauri-cli --version "^2"
 ```
 
 ## Running Tests
 ```bash
-# Node.js
-npm test
+# TypeScript type check (zero errors required before marking complete)
+npm run type-check
 
-# Python
-pytest
-
-# Rust
-cargo test
+# Frontend build test
+npm run build
 ```
 
 ## Build Commands
 ```bash
-# Production build
+# Frontend only (Vite build, verifies TypeScript + bundling)
 npm run build
-# or
-cargo build --release
+
+# Full Tauri desktop app
+npm run tauri:build
 ```
 
 ## Development Server
 ```bash
-# Start development server
+# Frontend dev server only (browser)
 npm run dev
-# or
-cargo run
+
+# Full Tauri app with hot reload
+npm run tauri:dev
+```
+
+## Project Structure
+```
+tybre-md/
+├── src/                          # React frontend
+│   ├── main.tsx                  # Entry point
+│   ├── App.tsx                   # Root component + keyboard shortcuts
+│   ├── editor/
+│   │   ├── MilkdownEditor.tsx    # Milkdown editor component
+│   │   └── SyntaxRevealNodeView.ts  # CRITICAL: PoC NodeView (## hides/shows)
+│   ├── components/
+│   │   ├── TabBar.tsx            # Multi-tab bar
+│   │   └── Sidebar.tsx           # File tree sidebar
+│   ├── store/
+│   │   └── appStore.ts           # Zustand global state
+│   └── styles/
+│       ├── globals.css           # CSS variables (Paper/Ink tokens) + Milkdown styles
+│       └── components.css        # Component-specific styles
+├── src-tauri/                    # Rust/Tauri backend
+│   ├── src/
+│   │   ├── main.rs               # Tauri entry point
+│   │   └── commands.rs           # IPC commands: read_file, write_file, open_folder, etc.
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+├── package.json
+├── vite.config.ts
+└── tsconfig.json
 ```
 
 ## Key Learnings
-- Update this section when you learn new build optimizations
-- Document any gotchas or special setup requirements
-- Keep track of the fastest test/build cycle
+- Milkdown v7 NodeView injection: use `editor.action((ctx) => ctx.get(editorViewCtx))` AFTER `editor.create()` to patch `view.setProps({ nodeViews: { heading: factory } })`
+- `prosemirror-model` exports `Node` which conflicts with DOM `Node` — import as `PmNode`
+- `ViewMutationRecord` from `prosemirror-view` is the correct type for `ignoreMutation`
+- tsconfig `moduleResolution: bundler` is required for Vite + Tauri compatibility
+- Build output is ~660KB (Milkdown is heavy) — future optimization: lazy-load editor
+- TypeScript strict mode: always `npm run type-check` before marking tasks complete
 
 ## Feature Development Quality Standards
 

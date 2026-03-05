@@ -1,0 +1,359 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================
+   Design System: Paper (light) + Ink (dark)
+   ========================================== */
+
+:root {
+  /* Paper theme (light) */
+  --bg: #FAFAF8;
+  --bg-surface: #F0EFEB;
+  --bg-overlay: rgba(250, 250, 248, 0.95);
+  --border: #E0DED8;
+  --text: #2C2C2C;
+  --text-muted: #9B9B97;
+  --text-faint: #C4C3BE;
+  --accent: #4A7FBF;
+  --accent-hover: #3D6EA8;
+  --accent-dim: rgba(74, 127, 191, 0.12);
+  --code-bg: #EDEDEB;
+  --selection: rgba(74, 127, 191, 0.2);
+
+  /* Typography */
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Pretendard, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Mono", "Fira Code", "Consolas", monospace;
+  --font-size-base: 16px;
+  --line-height: 1.75;
+
+  /* Spacing */
+  --editor-max-width: 800px;
+  --editor-padding-h: 32px;
+
+  /* Transitions */
+  --transition-fast: 150ms ease-out;
+  --transition-normal: 200ms ease-out;
+
+  /* Sidebar */
+  --sidebar-width: 240px;
+}
+
+/* Dark (Ink) theme */
+.dark {
+  --bg: #1C1C1E;
+  --bg-surface: #2C2C2E;
+  --bg-overlay: rgba(28, 28, 30, 0.95);
+  --border: #3A3A3C;
+  --text: #E4E4E4;
+  --text-muted: #8E8E93;
+  --text-faint: #5A5A5F;
+  --accent: #6BA3D6;
+  --accent-hover: #5990C3;
+  --accent-dim: rgba(107, 163, 214, 0.15);
+  --code-bg: #2C2C2E;
+  --selection: rgba(107, 163, 214, 0.25);
+}
+
+/* System preference auto-detection */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg: #1C1C1E;
+    --bg-surface: #2C2C2E;
+    --bg-overlay: rgba(28, 28, 30, 0.95);
+    --border: #3A3A3C;
+    --text: #E4E4E4;
+    --text-muted: #8E8E93;
+    --text-faint: #5A5A5F;
+    --accent: #6BA3D6;
+    --accent-hover: #5990C3;
+    --accent-dim: rgba(107, 163, 214, 0.15);
+    --code-bg: #2C2C2E;
+    --selection: rgba(107, 163, 214, 0.25);
+  }
+}
+
+/* ==========================================
+   Base Styles
+   ========================================== */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+/* Allow selection inside editor */
+.editor-area {
+  user-select: text;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+/* ==========================================
+   Milkdown Editor Styles
+   ========================================== */
+
+.milkdown {
+  width: 100%;
+  max-width: var(--editor-max-width);
+  margin: 0 auto;
+  padding: 48px var(--editor-padding-h);
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height);
+}
+
+.milkdown .editor {
+  outline: none;
+  min-height: calc(100vh - 96px);
+}
+
+/* Headings */
+.milkdown h1, .milkdown h2, .milkdown h3,
+.milkdown h4, .milkdown h5, .milkdown h6 {
+  margin: 1.5em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.milkdown h1 { font-size: 2em; margin-top: 0.75em; }
+.milkdown h2 { font-size: 1.5em; }
+.milkdown h3 { font-size: 1.25em; }
+.milkdown h4 { font-size: 1.1em; }
+.milkdown h5, .milkdown h6 { font-size: 1em; }
+
+/* Paragraphs */
+.milkdown p {
+  margin: 0.75em 0;
+}
+
+/* Bold / Italic */
+.milkdown strong { font-weight: 700; }
+.milkdown em { font-style: italic; }
+.milkdown del { text-decoration: line-through; color: var(--text-muted); }
+
+/* Blockquotes */
+.milkdown blockquote {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+  background: var(--accent-dim);
+  border-radius: 0 4px 4px 0;
+}
+
+/* Code */
+.milkdown code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--code-bg);
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+.milkdown pre {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 1em 1.25em;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+
+.milkdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.875em;
+}
+
+/* Lists */
+.milkdown ul, .milkdown ol {
+  padding-left: 1.75em;
+  margin: 0.5em 0;
+}
+
+.milkdown li {
+  margin: 0.25em 0;
+}
+
+/* Links */
+.milkdown a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--transition-fast);
+}
+
+.milkdown a:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* Horizontal rule */
+.milkdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+
+/* Tables */
+.milkdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.9375em;
+}
+
+.milkdown th, .milkdown td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.milkdown th {
+  background: var(--bg-surface);
+  font-weight: 600;
+}
+
+.milkdown tr:hover td {
+  background: var(--accent-dim);
+}
+
+/* Task lists */
+.milkdown li[data-checked] {
+  list-style: none;
+  margin-left: -1.25em;
+}
+
+.milkdown li[data-checked] input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--accent);
+}
+
+/* ==========================================
+   Syntax-Reveal Token Styles
+   The key PoC feature: tokens appear in muted
+   color when cursor is inside the block, and
+   hide (with transition) when cursor leaves.
+   ========================================== */
+
+.syntax-token {
+  color: var(--text-faint);
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+/* When heading is focused (cursor inside), show tokens */
+.heading-node.is-focused .syntax-token {
+  opacity: 1;
+  color: var(--text-muted);
+}
+
+/* When heading is unfocused, hide tokens */
+.heading-node:not(.is-focused) .syntax-token {
+  opacity: 0;
+  /* Keep in DOM for cursor positioning */
+  color: transparent;
+}
+
+/* ==========================================
+   Layout
+   ========================================== */
+
+.app-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width var(--transition-normal), opacity var(--transition-normal);
+}
+
+.sidebar.collapsed {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.tab-bar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  height: 38px;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.tab-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.editor-container {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg);
+  position: relative;
+}
+
+.editor-area {
+  height: 100%;
+}
+
+/* ==========================================
+   Scrollbars
+   ========================================== */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
