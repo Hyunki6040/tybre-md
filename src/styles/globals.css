@@ -257,6 +257,21 @@
   padding: 1em 1.25em;
   overflow-x: auto;
   margin: 1em 0;
+  position: relative;
+}
+
+.milkdown pre[data-language]::before {
+  content: attr(data-language);
+  position: absolute;
+  top: 0.5em;
+  right: 0.75em;
+  font-size: 0.7em;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  user-select: none;
 }
 
 .milkdown pre code {
@@ -265,12 +280,55 @@
   font-size: 0.875em;
 }
 
-.milkdown ul, .milkdown ol {
+/* ── Lists — fix Tailwind preflight removing markers ── */
+.milkdown ul {
+  list-style-type: disc;
   padding-left: 1.75em;
   margin: 0.5em 0;
 }
 
-.milkdown li { margin: 0.25em 0; }
+.milkdown ol {
+  list-style-type: decimal;
+  padding-left: 1.75em;
+  margin: 0.5em 0;
+}
+
+.milkdown ul ul { list-style-type: circle; }
+.milkdown ul ul ul { list-style-type: square; }
+
+.milkdown li {
+  margin: 0.3em 0;
+  display: list-item;
+}
+
+/* ── Task list (GFM — Milkdown uses data-item-type="task" + data-checked) ── */
+.milkdown li[data-item-type="task"] {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+  padding-left: 0;
+}
+
+.milkdown li[data-item-type="task"]::before {
+  content: "☐";
+  flex-shrink: 0;
+  margin-top: 0.05em;
+  color: var(--text-muted);
+  font-size: 1.1em;
+  line-height: 1.6;
+  cursor: default;
+}
+
+.milkdown li[data-item-type="task"][data-checked="true"]::before {
+  content: "☑";
+  color: var(--tybre-accent);
+}
+
+.milkdown li[data-item-type="task"][data-checked="true"] > p {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
 
 .milkdown a {
   color: var(--tybre-accent);
@@ -301,8 +359,9 @@
 }
 
 .milkdown th {
-  background: hsl(var(--muted));
+  background: hsl(var(--border));
   font-weight: 600;
+  color: var(--text);
 }
 
 .milkdown tr:hover td { background: var(--tybre-accent-dim); }
