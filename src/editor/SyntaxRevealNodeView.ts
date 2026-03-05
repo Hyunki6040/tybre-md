@@ -163,3 +163,30 @@ export function headingNodeViewFactory(
 ): HeadingNodeView {
   return new HeadingNodeView(node, view, getPos);
 }
+
+/**
+ * Scans all .heading-node elements in the view's DOM and updates
+ * their `is-focused` class based on the current selection.
+ *
+ * Must be called after every state update (including selection-only
+ * transactions) because NodeView.update() only fires on content changes.
+ */
+export function updateAllHeadingFocus(view: EditorView): void {
+  const { from, to } = view.state.selection;
+
+  view.dom.querySelectorAll<HTMLElement>(".heading-node").forEach((el) => {
+    try {
+      // posAtDOM returns position at start of node's content; -1 gives node start
+      const domPos = view.posAtDOM(el, 0);
+      if (domPos < 0) return;
+      const nodeStart = domPos - 1;
+      const node = view.state.doc.nodeAt(nodeStart);
+      if (!node) return;
+      const nodeEnd = nodeStart + node.nodeSize;
+      const isFocused = from > nodeStart && to <= nodeEnd;
+      el.classList.toggle("is-focused", isFocused);
+    } catch {
+      // posAtDOM can throw if el is outside the mounted view
+    }
+  });
+}

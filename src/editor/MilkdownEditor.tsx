@@ -13,7 +13,7 @@ import { Editor, rootCtx, defaultValueCtx, editorViewCtx } from "@milkdown/core"
 import { commonmark } from "@milkdown/preset-commonmark";
 import { gfm } from "@milkdown/preset-gfm";
 import { listener, listenerCtx } from "@milkdown/plugin-listener";
-import { headingNodeViewFactory } from "./SyntaxRevealNodeView";
+import { headingNodeViewFactory, updateAllHeadingFocus } from "./SyntaxRevealNodeView";
 
 interface MilkdownEditorProps {
   initialContent: string;
@@ -65,13 +65,22 @@ export function MilkdownEditor({
           return;
         }
 
-        // Inject HeadingNodeView for syntax-reveal after editor is live
+        // Inject HeadingNodeView for syntax-reveal after editor is live.
+        // Also patch dispatchTransaction so selection-only transactions
+        // (cursor moves without content changes) also update focus state —
+        // NodeView.update() only fires on content/attr changes, not on
+        // cursor movement alone.
         editor.action((ctx) => {
           const view = ctx.get(editorViewCtx);
           view.setProps({
             nodeViews: {
               ...view.props.nodeViews,
               heading: headingNodeViewFactory,
+            },
+            dispatchTransaction(tr) {
+              const nextState = view.state.apply(tr);
+              view.updateState(nextState);
+              updateAllHeadingFocus(view);
             },
           });
         });

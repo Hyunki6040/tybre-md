@@ -190,8 +190,8 @@ export default function App() {
                 onChange={handleEditorChange}
               />
             ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                <p className="text-sm">No file open</p>
+              <div className="flex h-full flex-col items-center justify-center gap-2" style={{ color: "var(--status-text)" }}>
+                <p className="text-sm font-medium">No file open</p>
                 <p className="text-xs">
                   Press{" "}
                   <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-mono">

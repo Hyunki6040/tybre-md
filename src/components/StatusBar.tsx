@@ -22,10 +22,11 @@ export function StatusBar({ content, className }: StatusBarProps) {
   return (
     <div
       className={cn(
-        "flex h-[24px] shrink-0 items-center border-t border-border bg-muted/60 px-4",
-        "text-[11px] text-muted-foreground select-none",
+        "flex h-[24px] shrink-0 items-center border-t border-border bg-background px-4",
+        "text-[11px] select-none",
         className
       )}
+      style={{ color: "var(--status-text)" }}
     >
       <span>
         words: {stats.words.toLocaleString()}
