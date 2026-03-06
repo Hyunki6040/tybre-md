@@ -127,14 +127,18 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
     const { cols, rows } = termFitDims(fit);
     const cwd = projectPathRef.current ?? null;
 
+    console.log("[terminal] spawnPty cols=%d rows=%d cwd=%s", cols, rows, cwd);
+
     import("@tauri-apps/api/core").then(({ invoke }) => {
       invoke("terminal_spawn", { cols, rows, cwd })
         .then(() => {
+          console.log("[terminal] terminal_spawn OK");
           if (cwd && autoClaudeRef.current) {
             setTimeout(() => sendText("claude\r"), 700);
           }
         })
         .catch((err: unknown) => {
+          console.error("[terminal] terminal_spawn FAILED:", err);
           spawnedRef.current = false;
           term.writeln(
             `\r\n\x1b[31m[tybre] 터미널 시작 실패: ${String(err)}\x1b[0m`
@@ -204,13 +208,17 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
       });
 
       // Register Tauri event listeners FIRST, spawn PTY only after both are ready.
-      // cancelled flag prevents StrictMode double-invoke race: if the cleanup effect
-      // runs before this async block resolves, we abandon the init so mount-2 can
-      // build the correct listeners bound to its own terminal instance.
-      let cancelled = false;
+      //
+      // We guard with a termRef identity check rather than a closure `cancelled` flag.
+      // A `cancelled` flag set in the [visible] effect cleanup fires whenever the user
+      // hides the terminal — permanently preventing spawnPty. termRef is set to null
+      // only by the [] unmount cleanup (or StrictMode remount), so it correctly
+      // distinguishes "this terminal is still active" vs "a new terminal replaced it".
       import("@tauri-apps/api/event")
         .then(async ({ listen }) => {
-          if (cancelled) return;
+          // Bail if this terminal was already replaced (StrictMode remount set termRef=null/term2)
+          if (termRef.current !== term) return;
+
           const [ul1, ul2] = await Promise.all([
             // PTY output → xterm display
             listen<string>("terminal-data", (event) => {
@@ -233,18 +241,19 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
             }),
           ]);
 
-          // Check again after the two awaits — cleanup may have run during them
-          if (cancelled) { ul1(); ul2(); return; }
+          // Check again after awaits — StrictMode unmount may have run between them
+          if (termRef.current !== term) { ul1(); ul2(); return; }
 
           unlistenData.current = ul1;
           unlistenExit.current = ul2;
 
+          console.log("[terminal] listeners registered, spawning PTY");
           // PTY spawned after listeners are ready — no output will be missed
           spawnPty(term, fit);
         })
         .catch(console.error);
 
-      return () => { cancelled = true; }; // cancel pending async if effect is torn down
+      return; // no cleanup for init branch — termRef identity handles StrictMode
     }
 
     // ── Already initialized: refit to current dimensions ─────────────────

@@ -382,9 +382,33 @@ export default function App() {
     return () => mq.removeEventListener("change", resolveTheme);
   }, [theme, setResolvedTheme]);
 
+  // ── Open new window ──────────────────────────────────────────────────────
+  async function openNewWindow() {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const label = `window-${Date.now()}`;
+      new WebviewWindow(label, {
+        url: "/",
+        title: "Tybre.md",
+        width: 1280,
+        height: 800,
+        minWidth: 800,
+        minHeight: 600,
+      });
+    } catch (err) {
+      console.error("Failed to open new window:", err);
+    }
+  }
+
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // New window
+      if (matches("new-window", e)) {
+        e.preventDefault();
+        openNewWindow();
+        return;
+      }
       // Sidebar toggle
       if (matches("sidebar", e)) {
         e.preventDefault();
