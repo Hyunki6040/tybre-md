@@ -1,12 +1,12 @@
 /**
  * TerminalView — xterm.js terminal backed by portable-pty (Tauri).
  *
- * Features:
- *  - Paper / Ink theme-aware colors
- *  - Auto-cd when project folder changes
- *  - Optional auto-launch of Claude Code (persisted setting)
- *  - Shell exit detection with one-keypress restart
- *  - Settings toolbar in the header
+ * Key correctness rules:
+ *  1. term.open() is called ONLY when the container is visible (display:flex),
+ *     because xterm.js measures font metrics on open — a display:none element
+ *     returns 0 sizes and breaks the renderer permanently.
+ *  2. Tauri event listeners are registered BEFORE terminal_spawn is invoked,
+ *     so no early PTY output (shell prompt) is lost.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -24,22 +24,12 @@ const TERM_THEME_INK = {
   cursor: "#6BA3D6",
   cursorAccent: "#1C1C1E",
   selectionBackground: "rgba(107,163,214,0.25)",
-  black: "#3C3C3E",
-  red: "#FF6B6B",
-  green: "#86D9A0",
-  yellow: "#E5C07B",
-  blue: "#6BA3D6",
-  magenta: "#C678DD",
-  cyan: "#56B6C2",
-  white: "#AEAEB2",
-  brightBlack: "#636366",
-  brightRed: "#FF8888",
-  brightGreen: "#98D9B8",
-  brightYellow: "#F0D080",
-  brightBlue: "#80B8E8",
-  brightMagenta: "#D090E0",
-  brightCyan: "#70C8D4",
-  brightWhite: "#E4E4E4",
+  black: "#3C3C3E",   red: "#FF6B6B",    green: "#86D9A0",
+  yellow: "#E5C07B",  blue: "#6BA3D6",   magenta: "#C678DD",
+  cyan: "#56B6C2",    white: "#AEAEB2",
+  brightBlack: "#636366", brightRed: "#FF8888",   brightGreen: "#98D9B8",
+  brightYellow: "#F0D080",brightBlue: "#80B8E8",  brightMagenta: "#D090E0",
+  brightCyan: "#70C8D4",  brightWhite: "#E4E4E4",
 };
 
 const TERM_THEME_PAPER = {
@@ -48,33 +38,24 @@ const TERM_THEME_PAPER = {
   cursor: "#4A7FBF",
   cursorAccent: "#FAFAF8",
   selectionBackground: "rgba(74,127,191,0.2)",
-  black: "#2C2C2E",
-  red: "#BE0000",
-  green: "#1A7100",
-  yellow: "#956800",
-  blue: "#2157A3",
-  magenta: "#7B2CA6",
-  cyan: "#007070",
-  white: "#666770",
-  brightBlack: "#909090",
-  brightRed: "#D73A49",
-  brightGreen: "#22863A",
-  brightYellow: "#B08800",
-  brightBlue: "#4A7FBF",
-  brightMagenta: "#9E45AD",
-  brightCyan: "#0E7490",
-  brightWhite: "#FAFAF8",
+  black: "#2C2C2E",   red: "#BE0000",    green: "#1A7100",
+  yellow: "#956800",  blue: "#2157A3",   magenta: "#7B2CA6",
+  cyan: "#007070",    white: "#666770",
+  brightBlack: "#909090", brightRed: "#D73A49",   brightGreen: "#22863A",
+  brightYellow: "#B08800",brightBlue: "#4A7FBF",  brightMagenta: "#9E45AD",
+  brightCyan: "#0E7490",  brightWhite: "#FAFAF8",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** POSIX single-quote escape for safe shell path arguments. */
 function shellQuote(path: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`;
 }
 
 function termFitDims(fit: FitAddon): { cols: number; rows: number } {
-  const proposed = (fit as unknown as { proposeDimensions?: () => { cols: number; rows: number } | undefined }).proposeDimensions?.();
+  const proposed = (fit as unknown as {
+    proposeDimensions?: () => { cols: number; rows: number } | undefined;
+  }).proposeDimensions?.();
   return {
     cols: Number.isFinite(proposed?.cols) ? Math.max(2, proposed!.cols) : 80,
     rows: Number.isFinite(proposed?.rows) ? Math.max(1, proposed!.rows) : 24,
@@ -91,18 +72,17 @@ interface TerminalViewProps {
 export function TerminalView({ visible, projectPath }: TerminalViewProps) {
   const resolvedTheme = useAppStore((s) => s.resolvedTheme);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const spawnedRef = useRef(false);
-  const unlistenDataRef = useRef<(() => void) | null>(null);
-  const unlistenExitRef = useRef<(() => void) | null>(null);
+  const containerRef   = useRef<HTMLDivElement>(null);
+  const termRef        = useRef<Terminal | null>(null);
+  const fitRef         = useRef<FitAddon | null>(null);
+  const spawnedRef     = useRef(false);
+  const initializedRef = useRef(false);           // guards one-time setup
+  const unlistenData   = useRef<(() => void) | null>(null);
+  const unlistenExit   = useRef<(() => void) | null>(null);
 
-  // Always-current projectPath (no stale closure in callbacks)
+  // Always-current refs — no stale closures in callbacks
   const projectPathRef = useRef(projectPath);
   projectPathRef.current = projectPath;
-
-  // Track previous project to detect changes
   const prevProjectRef = useRef<string | null>(null);
 
   // Auto-Claude setting
@@ -114,7 +94,7 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // ── Low-level helpers ───────────────────────────────────────────────────
 
   function sendText(text: string) {
     import("@tauri-apps/api/core").then(({ invoke }) => {
@@ -138,101 +118,135 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
     localStorage.setItem("tybre:autoClaude", JSON.stringify(next));
   }
 
-  // ── Spawn PTY ────────────────────────────────────────────────────────────
+  // ── Spawn PTY (must be called after listeners are registered) ───────────
 
   function spawnPty(term: Terminal, fit: FitAddon) {
     if (spawnedRef.current) return;
     spawnedRef.current = true;
 
     const { cols, rows } = termFitDims(fit);
-    const cwd = projectPathRef.current ?? undefined;
+    const cwd = projectPathRef.current ?? null;
 
     import("@tauri-apps/api/core").then(({ invoke }) => {
-      invoke("terminal_spawn", { cols, rows, cwd: cwd ?? null })
+      invoke("terminal_spawn", { cols, rows, cwd })
         .then(() => {
-          // After shell initialises (~700ms), run claude if enabled
           if (cwd && autoClaudeRef.current) {
             setTimeout(() => sendText("claude\r"), 700);
           }
         })
         .catch((err: unknown) => {
           spawnedRef.current = false;
-          term.writeln(`\r\n\x1b[31m[tybre] Failed to start terminal: ${String(err)}\x1b[0m`);
+          term.writeln(
+            `\r\n\x1b[31m[tybre] 터미널 시작 실패: ${String(err)}\x1b[0m`
+          );
         });
     });
   }
 
-  // ── xterm initialisation (once on mount) ────────────────────────────────
+  // ── Unmount cleanup ─────────────────────────────────────────────────────
+  // The component is intentionally kept alive (display:none, never unmounted).
+  // This effect only cleans up if the whole app unmounts.
 
   useEffect(() => {
-    if (!containerRef.current || termRef.current) return;
-
-    const initialTheme = useAppStore.getState().resolvedTheme;
-    const theme = initialTheme === "ink" ? TERM_THEME_INK : TERM_THEME_PAPER;
-
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 13,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
-      theme,
-      allowTransparency: false,
-      scrollback: 5000,
-    });
-
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(containerRef.current);
-    fit.fit();
-
-    termRef.current = term;
-    fitRef.current = fit;
-
-    // Pipe keystrokes → PTY
-    term.onData((data) => {
-      import("@tauri-apps/api/core").then(({ invoke }) => {
-        const encoder = new TextEncoder();
-        invoke("terminal_write", { data: Array.from(encoder.encode(data)) }).catch(() => {});
-      });
-    });
-
-    spawnPty(term, fit);
-
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      // PTY output → xterm
-      listen<string>("terminal-data", (event) => {
-        const binary = atob(event.payload);
-        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-        term.write(bytes);
-      }).then((ul) => { unlistenDataRef.current = ul; });
-
-      // PTY process exited → offer restart
-      listen<void>("terminal-exit", () => {
-        spawnedRef.current = false;
-        term.writeln(
-          "\r\n\x1b[33m─────────────────────────────────────────\x1b[0m\r\n" +
-          "\x1b[33m  Shell 종료  —  아무 키나 누르면 재시작\x1b[0m\r\n" +
-          "\x1b[33m─────────────────────────────────────────\x1b[0m"
-        );
-        const d = term.onKey(() => {
-          d.dispose();
-          if (fitRef.current) spawnPty(term, fitRef.current);
-        });
-      }).then((ul) => { unlistenExitRef.current = ul; });
-    });
-
     return () => {
-      unlistenDataRef.current?.();
-      unlistenExitRef.current?.();
-      unlistenDataRef.current = null;
-      unlistenExitRef.current = null;
-      term.dispose();
+      unlistenData.current?.();
+      unlistenExit.current?.();
+      termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
       spawnedRef.current = false;
+      initializedRef.current = false;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Sync terminal colour theme with app theme ────────────────────────────
+  // ── Main lifecycle: initialize once on first visible, refit on re-show ──
+
+  useEffect(() => {
+    if (!visible) return;
+
+    // ── First time visible: full init ────────────────────────────────────
+    if (!initializedRef.current && containerRef.current) {
+      initializedRef.current = true;
+
+      const theme =
+        useAppStore.getState().resolvedTheme === "ink"
+          ? TERM_THEME_INK
+          : TERM_THEME_PAPER;
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily:
+          "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
+        theme,
+        allowTransparency: false,
+        scrollback: 5000,
+      });
+
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+
+      // Element is visible NOW — safe to open
+      term.open(containerRef.current);
+      fit.fit();
+
+      termRef.current = term;
+      fitRef.current = fit;
+
+      // Pipe keystrokes → PTY
+      term.onData((data) => {
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          const encoder = new TextEncoder();
+          invoke("terminal_write", {
+            data: Array.from(encoder.encode(data)),
+          }).catch(() => {});
+        });
+      });
+
+      // Register Tauri event listeners FIRST, spawn PTY only after both are ready
+      import("@tauri-apps/api/event")
+        .then(async ({ listen }) => {
+          const [ul1, ul2] = await Promise.all([
+            // PTY output → xterm display
+            listen<string>("terminal-data", (event) => {
+              const binary = atob(event.payload);
+              const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+              term.write(bytes);
+            }),
+            // Shell exited → prompt restart
+            listen<void>("terminal-exit", () => {
+              spawnedRef.current = false;
+              term.writeln(
+                "\r\n\x1b[33m──────────────────────────────────────\x1b[0m\r\n" +
+                "\x1b[33m  Shell 종료 — 아무 키나 누르면 재시작\x1b[0m\r\n" +
+                "\x1b[33m──────────────────────────────────────\x1b[0m"
+              );
+              const d = term.onKey(() => {
+                d.dispose();
+                if (fitRef.current) spawnPty(term, fitRef.current);
+              });
+            }),
+          ]);
+          unlistenData.current = ul1;
+          unlistenExit.current = ul2;
+
+          // PTY spawned after listeners are ready — no output will be missed
+          spawnPty(term, fit);
+        })
+        .catch(console.error);
+
+      return; // no cleanup needed from init branch
+    }
+
+    // ── Already initialized: refit to current dimensions ─────────────────
+    const t = setTimeout(() => {
+      fitRef.current?.fit();
+      syncSize();
+    }, 220);
+    return () => clearTimeout(t);
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Sync terminal colour palette when app theme changes ─────────────────
 
   useEffect(() => {
     if (!termRef.current) return;
@@ -248,7 +262,6 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
 
     if (!projectPath || projectPath === prev || !spawnedRef.current) return;
 
-    // Small delay so the shell is ready if this fires just after spawn
     const t = setTimeout(() => {
       sendText(`cd ${shellQuote(projectPath)}\r`);
       if (autoClaudeRef.current) {
@@ -258,24 +271,13 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
     return () => clearTimeout(t);
   }, [projectPath]);
 
-  // ── Refit on visibility change ───────────────────────────────────────────
-
-  useEffect(() => {
-    if (!visible || !fitRef.current) return;
-    const t = setTimeout(() => {
-      fitRef.current?.fit();
-      syncSize();
-    }, 220);
-    return () => clearTimeout(t);
-  }, [visible]);
-
   // ── ResizeObserver ───────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver(() => {
-      if (visible) {
-        fitRef.current?.fit();
+      if (visible && fitRef.current) {
+        fitRef.current.fit();
         syncSize();
       }
     });
@@ -287,13 +289,11 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
 
   useEffect(() => {
     if (!settingsOpen) return;
-    function onMouseDown(e: MouseEvent) {
-      if (!settingsRef.current?.contains(e.target as Node)) {
-        setSettingsOpen(false);
-      }
+    function onDown(e: MouseEvent) {
+      if (!settingsRef.current?.contains(e.target as Node)) setSettingsOpen(false);
     }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
   }, [settingsOpen]);
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -310,24 +310,20 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
         overflow: "hidden",
       }}
     >
-      {/* ── Header ── */}
+      {/* ── Header bar ─────────────────────────────────────────────────── */}
       <div
         className="flex shrink-0 items-center justify-between border-b border-border px-3"
         style={{ height: 32, background: "var(--muted)" }}
       >
-        {/* Left: project name */}
         <span className="font-mono text-xs text-muted-foreground">
           {projectName ? (
-            <>
-              <span className="opacity-50">~/</span>
-              <span>{projectName}</span>
-            </>
+            <><span className="opacity-40">~/</span>{projectName}</>
           ) : (
             "Terminal"
           )}
         </span>
 
-        {/* Right: settings button + dropdown */}
+        {/* Settings */}
         <div className="relative" ref={settingsRef}>
           <button
             onClick={() => setSettingsOpen((o) => !o)}
@@ -343,19 +339,15 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
               className="absolute right-0 top-full z-50 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-popover shadow-xl"
               role="menu"
             >
-              {/* Dropdown header */}
               <div className="border-b border-border px-3 py-2">
                 <p className="text-xs font-semibold text-muted-foreground">터미널 설정</p>
               </div>
-
-              {/* Auto-Claude toggle */}
               <div className="p-1.5">
                 <label
                   className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2.5 transition-colors hover:bg-muted"
                   role="menuitem"
                 >
                   <div className="mt-0.5 flex-none">
-                    {/* Custom checkbox */}
                     <span
                       className="flex h-4 w-4 items-center justify-center rounded border transition-colors"
                       style={{
@@ -364,7 +356,11 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
                       }}
                     >
                       {autoClaude && (
-                        <Check size={10} style={{ color: "var(--primary-foreground)" }} strokeWidth={3} />
+                        <Check
+                          size={10}
+                          strokeWidth={3}
+                          style={{ color: "var(--primary-foreground)" }}
+                        />
                       )}
                     </span>
                     <input
@@ -375,9 +371,15 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
                     />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">Claude Code 자동 실행</p>
+                    <p className="text-sm font-medium text-foreground">
+                      Claude Code 자동 실행
+                    </p>
                     <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                      프로젝트를 열 때 자동으로 <code className="rounded bg-muted px-1 py-px font-mono">claude</code> 명령을 실행합니다
+                      프로젝트를 열 때 자동으로{" "}
+                      <code className="rounded bg-muted px-1 py-px font-mono">
+                        claude
+                      </code>{" "}
+                      명령을 실행합니다
                     </p>
                   </div>
                 </label>
@@ -387,7 +389,7 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
         </div>
       </div>
 
-      {/* ── xterm canvas ── */}
+      {/* ── xterm canvas ─────────────────────────────────────────────────── */}
       <div
         ref={containerRef}
         style={{
