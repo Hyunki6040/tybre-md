@@ -3,8 +3,14 @@ import { useAppStore } from "@/store/appStore";
 import { TabBar } from "@/components/TabBar";
 import { Sidebar } from "@/components/Sidebar";
 import { QuickOpen } from "@/components/QuickOpen";
+import { Settings } from "@/components/Settings";
+import { FindBar } from "@/components/FindBar";
+import { ProjectSearch } from "@/components/ProjectSearch";
+import { ExportModal } from "@/components/ExportModal";
+import { SHORTCUT_DEFS, matchesCombo } from "@/lib/shortcuts";
 import { StatusBar } from "@/components/StatusBar";
 import { MilkdownEditor } from "@/editor/MilkdownEditor";
+import { TerminalView } from "@/components/TerminalView";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
@@ -23,12 +29,51 @@ export default function App() {
     restoreLastTab,
     setActiveTab,
     setQuickOpenVisible,
+    setFileTree,
+    addRecentDir,
+    settingsVisible, setSettingsVisible,
+    findBarVisible, setFindBarVisible,
+    projectSearchVisible, setProjectSearchVisible,
+    exportVisible, setExportVisible,
+    fontSize,
+    autoSave,
+    customShortcuts,
+    guideMode,
+    recordShortcutUse,
   } = useAppStore();
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
+  // Resolve effective shortcut combo (custom overrides default)
+  function key(id: string): string {
+    return customShortcuts[id] ?? SHORTCUT_DEFS.find((s) => s.id === id)?.defaultKey ?? "";
+  }
+  function matches(id: string, e: KeyboardEvent): boolean {
+    return matchesCombo(e, key(id));
+  }
+
   // Auto-save timer ref
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Apply persisted font size on mount ───────────────────────────────────
+  useEffect(() => {
+    document.documentElement.style.setProperty("--font-size-base", `${fontSize}px`);
+  }, [fontSize]);
+
+  // ── Open project from URL param (?project=<path>) ─────────────────────────
+  // Used when the app is launched in a new window via QuickOpen "open project"
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const projectPath = params.get("project");
+    if (!projectPath) return;
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke<import("@/store/appStore").FileEntry>("open_folder", { path: projectPath }))
+      .then((tree) => {
+        setFileTree(tree);
+        addRecentDir(projectPath);
+      })
+      .catch(console.error);
+  }, []);
 
   // ── Theme resolution ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -50,25 +95,24 @@ export default function App() {
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      const meta = e.metaKey || e.ctrlKey;
-
-      // Cmd+B — sidebar toggle
-      if (meta && !e.shiftKey && e.key === "b") {
+      // Sidebar toggle
+      if (matches("sidebar", e)) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("sidebar");
         toggleSidebar();
         return;
       }
-
-      // Cmd+` — editor ↔ terminal
-      if (meta && e.key === "`") {
+      // Terminal toggle
+      if (matches("terminal", e)) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("terminal");
         toggleView();
         return;
       }
-
-      // Cmd+T or Cmd+N — new tab
-      if (meta && !e.shiftKey && (e.key === "t" || e.key === "n")) {
+      // New tab
+      if (matches("new-tab", e) || ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N"))) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("new-tab");
         useAppStore.getState().addTab({
           id: `tab-${Date.now()}`,
           filePath: null,
@@ -78,48 +122,79 @@ export default function App() {
         });
         return;
       }
-
-      // Cmd+W — close active tab
-      if (meta && !e.shiftKey && e.key === "w") {
+      // Close tab
+      if (matches("close-tab", e)) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("close-tab");
         const { activeTabId } = useAppStore.getState();
         if (activeTabId) useAppStore.getState().closeTab(activeTabId);
         return;
       }
-
-      // Cmd+Shift+T — restore last closed tab
-      if (meta && e.shiftKey && e.key === "T") {
+      // Restore closed tab
+      if (matches("restore-tab", e)) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("restore-tab");
         restoreLastTab();
         return;
       }
-
-      // Cmd+P — quick open
-      if (meta && !e.shiftKey && e.key === "p") {
+      // Quick open
+      if (matches("quick-open", e)) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("quick-open");
         setQuickOpenVisible(true);
         return;
       }
-
-      // Cmd+S — save current tab to file
-      if (meta && !e.shiftKey && e.key === "s") {
+      // Save
+      if (matches("save", e)) {
         e.preventDefault();
+        if (guideMode) recordShortcutUse("save");
         saveActiveTab();
         return;
       }
-
-      // Cmd+1~9 — switch to tab by index
-      if (meta && e.key >= "1" && e.key <= "9") {
+      // Find in document
+      if (matches("find", e)) {
+        e.preventDefault();
+        if (guideMode) recordShortcutUse("find");
+        setFindBarVisible(!findBarVisible);
+        return;
+      }
+      // Project search
+      if (matches("project-search", e)) {
+        e.preventDefault();
+        if (guideMode) recordShortcutUse("project-search");
+        setProjectSearchVisible(true);
+        return;
+      }
+      // Export
+      if (matches("export", e)) {
+        e.preventDefault();
+        if (guideMode) recordShortcutUse("export");
+        setExportVisible(true);
+        return;
+      }
+      // Settings
+      if (matches("settings", e)) {
+        e.preventDefault();
+        if (guideMode) recordShortcutUse("settings");
+        setSettingsVisible(true);
+        return;
+      }
+      // Tab switch Cmd+1~9
+      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
         const idx = parseInt(e.key, 10) - 1;
         const { tabs } = useAppStore.getState();
         if (tabs[idx]) {
           e.preventDefault();
+          if (guideMode) recordShortcutUse("tab-switch");
           setActiveTab(tabs[idx].id);
         }
         return;
       }
     },
-    [toggleSidebar, toggleView, restoreLastTab, setActiveTab, setQuickOpenVisible]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [toggleSidebar, toggleView, restoreLastTab, setActiveTab, setQuickOpenVisible,
+     setSettingsVisible, setFindBarVisible, setProjectSearchVisible, setExportVisible,
+     guideMode, recordShortcutUse, customShortcuts]
   );
 
   useEffect(() => {
@@ -131,7 +206,26 @@ export default function App() {
   function saveActiveTab() {
     const { tabs, activeTabId } = useAppStore.getState();
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab?.filePath) return; // untitled — needs Save As (future)
+    if (!tab) return;
+
+    if (!tab.filePath) {
+      // No path yet — show native Save As dialog
+      import("@tauri-apps/api/core").then(async ({ invoke }) => {
+        const path = await invoke<string | null>("pick_save_path", {
+          defaultName: tab.title.endsWith(".md") ? tab.title : `${tab.title}.md`,
+        });
+        if (!path) return;
+        await invoke("write_file", { path, content: tab.content });
+        useAppStore.setState((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === tab.id
+              ? { ...t, filePath: path, title: path.split("/").pop() ?? tab.title, isDirty: false }
+              : t
+          ),
+        }));
+      }).catch(console.error);
+      return;
+    }
 
     import("@tauri-apps/api/core")
       .then(({ invoke }) =>
@@ -147,6 +241,7 @@ export default function App() {
     updateTabContent(activeTabId, markdown);
 
     // 1s debounce auto-save — only for files with a path
+    if (!autoSave) return;
     if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
     autoSaveRef.current = setTimeout(() => {
       const { tabs } = useAppStore.getState();
@@ -181,6 +276,9 @@ export default function App() {
         <div className="main-area">
           <TabBar />
 
+          {/* Find bar */}
+          {findBarVisible && <FindBar />}
+
           {/* Editor view */}
           <div className={cn("editor-container", view !== "editor" && "hidden")}>
             {activeTab ? (
@@ -204,26 +302,15 @@ export default function App() {
             {activeTab && <StatusBar content={activeTab.content} />}
           </div>
 
-          {/* Terminal placeholder — xterm.js in Phase 1 Week 7-8 */}
-          <div
-            className={cn(
-              "flex flex-1 flex-col items-center justify-center gap-2 bg-background text-sm text-muted-foreground",
-              view !== "terminal" && "hidden"
-            )}
-          >
-            <p>Terminal — coming in Phase 1 Week 7</p>
-            <p className="text-xs">
-              Press{" "}
-              <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">
-                ⌘`
-              </kbd>{" "}
-              to return to editor
-            </p>
-          </div>
+          {/* Terminal — xterm.js + portable-pty */}
+          <TerminalView visible={view === "terminal"} />
         </div>
 
         {/* Global overlays */}
         <QuickOpen />
+        {settingsVisible && <Settings />}
+        {projectSearchVisible && <ProjectSearch />}
+        {exportVisible && <ExportModal />}
       </div>
     </TooltipProvider>
   );
