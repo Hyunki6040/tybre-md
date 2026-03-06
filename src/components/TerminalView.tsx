@@ -1,6 +1,6 @@
 /**
  * TerminalView — xterm.js terminal backed by portable-pty (Tauri).
- * Supports multiple PTY sessions with a tabbed UI.
+ * Supports multiple PTY sessions with a tabbed UI and a command queue panel.
  *
  * Key correctness rules:
  *  1. term.open() is called ONLY when the container div has display:flex.
@@ -16,7 +16,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Settings2, Check, Plus, X } from "lucide-react";
+import { Settings2, Check, Plus, X, ListTodo } from "lucide-react";
 import { useAppStore } from "@/store/appStore";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +69,11 @@ interface TerminalViewProps {
   visible: boolean;
   projectPath: string | null;
   onProjectChange?: (path: string) => void;
+}
+
+interface QueueItem {
+  id: string;
+  text: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -129,6 +134,42 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
 
   // Outer container ref for ResizeObserver
   const outerRef = useRef<HTMLDivElement>(null);
+
+  // ── Queue state ───────────────────────────────────────────────────────────
+  // Mirrored in both useState (render) and useRef (closure access)
+  const [, setQueues] = useState<Map<string, QueueItem[]>>(new Map());
+  const queuesRef = useRef<Map<string, QueueItem[]>>(new Map());
+
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [queueFocusIdx, setQueueFocusIdx] = useState(-1);
+  const [queueInput, setQueueInput] = useState("");
+  const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
+  const [editingQueueText, setEditingQueueText] = useState("");
+  const [expandedQueueId, setExpandedQueueId] = useState<string | null>(null);
+  const queuePanelRef = useRef<HTMLDivElement>(null);
+  const queueInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Track busy transitions for auto-send
+  const prevBusyRef = useRef<Map<string, boolean>>(new Map());
+
+  // ── Queue helpers ─────────────────────────────────────────────────────────
+
+  function getQueue(sessionId: string): QueueItem[] {
+    return queuesRef.current.get(sessionId) ?? [];
+  }
+
+  function setQueue(sessionId: string, items: QueueItem[]) {
+    const m = new Map(queuesRef.current);
+    m.set(sessionId, items);
+    queuesRef.current = m;
+    setQueues(new Map(m));
+  }
+
+  function enqueue(sessionId: string, text: string) {
+    const t = text.trim();
+    if (!t) return;
+    setQueue(sessionId, [...getQueue(sessionId), { id: genId(), text: t }]);
+  }
 
   // ── Session management ──────────────────────────────────────────────────
 
@@ -286,6 +327,29 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     const inst: TermInstance = { term, fit, spawned: false };
     termInstancesRef.current.set(sessionId, inst);
 
+    // ── Custom key handler: session switching + queue toggle ──
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && e.key === "[") {
+        const s = sessionsRef.current;
+        const i = s.findIndex((x) => x.id === activeSessionIdRef.current);
+        if (i > 0) setActiveSessionId(s[i - 1].id);
+        return false;
+      }
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && e.key === "]") {
+        const s = sessionsRef.current;
+        const i = s.findIndex((x) => x.id === activeSessionIdRef.current);
+        if (i < s.length - 1) setActiveSessionId(s[i + 1].id);
+        return false;
+      }
+      if (e.ctrlKey && e.shiftKey && (e.key === "q" || e.key === "Q")) {
+        setQueueOpen((o) => !o);
+        return false;
+      }
+      return true;
+    });
+
     term.onData((data) => {
       import("@tauri-apps/api/core").then(({ invoke }) => {
         const encoder = new TextEncoder();
@@ -298,6 +362,24 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
 
     spawnPty(sessionId, projPath, term, fit);
   }
+
+  // ── Auto-send from queue when busy → idle ────────────────────────────────
+
+  useEffect(() => {
+    sessions.forEach((session) => {
+      const wasBusy = prevBusyRef.current.get(session.id) ?? false;
+      if (wasBusy && !session.busy) {
+        const items = getQueue(session.id);
+        if (items.length > 0) {
+          const [first, ...rest] = items;
+          setQueue(session.id, rest);
+          setTimeout(() => sendText(session.id, first.text + "\r"), 300);
+        }
+      }
+      prevBusyRef.current.set(session.id, session.busy);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions]);
 
   // ── Lifecycle effects ────────────────────────────────────────────────────
 
@@ -395,6 +477,19 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     }
   }, [renamingId]);
 
+  // Focus queue panel or input when it opens
+  useEffect(() => {
+    if (!queueOpen || !activeSessionId) return;
+    const items = getQueue(activeSessionId);
+    if (items.length > 0) {
+      setQueueFocusIdx(0);
+    } else {
+      setQueueFocusIdx(-1);
+      setTimeout(() => queueInputRef.current?.focus(), 30);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueOpen, activeSessionId]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -440,6 +535,57 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     autoClaudeRef.current = next;
     setAutoClaude(next);
     localStorage.setItem("tybre:autoClaude", JSON.stringify(next));
+  }
+
+  // ── Queue panel keyboard handler ─────────────────────────────────────────
+
+  function handleQueueKeyDown(e: React.KeyboardEvent) {
+    const items = activeSessionId ? getQueue(activeSessionId) : [];
+
+    if (e.key === "Escape") {
+      if (editingQueueId) { setEditingQueueId(null); return; }
+      setQueueOpen(false);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (queueFocusIdx <= 0) {
+        setQueueFocusIdx(-1);
+        queueInputRef.current?.focus();
+      } else {
+        setQueueFocusIdx((i) => i - 1);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setQueueFocusIdx((i) => Math.min(i + 1, items.length - 1));
+      return;
+    }
+
+    const item = queueFocusIdx >= 0 ? items[queueFocusIdx] : null;
+    if (item) {
+      if (e.key === "Enter") {
+        setExpandedQueueId((id) => (id === item.id ? null : item.id));
+        return;
+      }
+      if (e.key === "e" || e.key === "E") {
+        setEditingQueueId(item.id);
+        setEditingQueueText(item.text);
+        return;
+      }
+      if (e.key === "Delete" || e.key === "d" || e.key === "D") {
+        if (!activeSessionId) return;
+        setQueue(activeSessionId, items.filter((i) => i.id !== item.id));
+        setQueueFocusIdx((i) => Math.min(i, items.length - 2));
+        return;
+      }
+    }
+
+    if (e.key === "n" || e.key === "N") {
+      setQueueFocusIdx(-1);
+      setTimeout(() => queueInputRef.current?.focus(), 10);
+    }
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -542,6 +688,27 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
           </button>
         </div>
 
+        {/* Queue toggle button */}
+        <div className="shrink-0 flex items-center px-1">
+          <button
+            onClick={() => setQueueOpen((o) => !o)}
+            className={cn(
+              "flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors",
+              queueOpen
+                ? "text-foreground bg-background/60"
+                : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+            )}
+            title="대기열 (Ctrl+⇧Q)"
+          >
+            <ListTodo size={12} />
+            {activeSessionId && getQueue(activeSessionId).length > 0 && (
+              <span className="text-[10px] tabular-nums">
+                {getQueue(activeSessionId).length}
+              </span>
+            )}
+          </button>
+        </div>
+
         {/* Settings dropdown */}
         <div className="relative shrink-0 flex items-center px-1" ref={settingsRef}>
           <button
@@ -608,46 +775,265 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         </div>
       </div>
 
-      {/* ── Terminal canvases — all in DOM, display toggled ───────────── */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {sessions.map((session) => (
-          <div
-            key={session.id}
-            ref={(el) => {
-              if (el) termDivsRef.current.set(session.id, el);
-              else termDivsRef.current.delete(session.id);
-            }}
-            style={{
-              position: "absolute",
-              inset: 0,
-              padding: 8,
-              background: termBg,
-              display: session.id === activeSessionId ? "flex" : "none",
-              flexDirection: "column",
-            }}
-          />
-        ))}
+      {/* ── Terminal canvases + Queue panel (side by side) ────────────── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* xterm canvases — all in DOM, display toggled */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          {sessions.map((session) => (
+            <div
+              key={session.id}
+              ref={(el) => {
+                if (el) termDivsRef.current.set(session.id, el);
+                else termDivsRef.current.delete(session.id);
+              }}
+              style={{
+                position: "absolute",
+                inset: 0,
+                padding: 8,
+                background: termBg,
+                display: session.id === activeSessionId ? "flex" : "none",
+                flexDirection: "column",
+              }}
+            />
+          ))}
 
-        {sessions.length === 0 && (
+          {sessions.length === 0 && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: termBg,
+              }}
+            >
+              <span
+                className="font-mono text-xs"
+                style={{ color: "var(--muted-foreground)" }}
+              >
+                터미널 로딩 중…
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Queue panel */}
+        {queueOpen && activeSessionId && (
           <div
+            ref={queuePanelRef}
+            tabIndex={0}
+            onKeyDown={handleQueueKeyDown}
             style={{
-              position: "absolute",
-              inset: 0,
+              width: 260,
+              borderLeft: "1px solid var(--border)",
               display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: termBg,
+              flexDirection: "column",
+              background: "var(--muted)",
+              outline: "none",
             }}
           >
-            <span
-              className="font-mono text-xs"
-              style={{ color: "var(--muted-foreground)" }}
+            {/* Header */}
+            <div
+              style={{
+                height: 32,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "0 8px",
+                borderBottom: "1px solid var(--border)",
+                flexShrink: 0,
+              }}
             >
-              터미널 로딩 중…
-            </span>
+              <span className="font-mono text-xs font-medium">
+                대기열{" "}
+                {getQueue(activeSessionId).length > 0 && (
+                  <span className="text-muted-foreground">
+                    ({getQueue(activeSessionId).length})
+                  </span>
+                )}
+              </span>
+              <span className="text-[10px] text-muted-foreground ml-auto">Esc 닫기</span>
+            </div>
+
+            {/* Item list */}
+            <div style={{ flex: 1, overflowY: "auto", padding: 4 }}>
+              {getQueue(activeSessionId).map((item, idx) => (
+                <QueueItemRow
+                  key={item.id}
+                  item={item}
+                  index={idx}
+                  focused={queueFocusIdx === idx}
+                  expanded={expandedQueueId === item.id}
+                  editing={editingQueueId === item.id}
+                  editText={editingQueueText}
+                  onFocus={() => setQueueFocusIdx(idx)}
+                  onToggleExpand={() =>
+                    setExpandedQueueId((id) => (id === item.id ? null : item.id))
+                  }
+                  onEditChange={setEditingQueueText}
+                  onEditCommit={() => {
+                    setQueue(
+                      activeSessionId,
+                      getQueue(activeSessionId).map((i) =>
+                        i.id === item.id
+                          ? { ...i, text: editingQueueText.trim() || i.text }
+                          : i
+                      )
+                    );
+                    setEditingQueueId(null);
+                  }}
+                  onEditCancel={() => setEditingQueueId(null)}
+                  onStartEdit={() => {
+                    setEditingQueueId(item.id);
+                    setEditingQueueText(item.text);
+                  }}
+                  onDelete={() =>
+                    setQueue(
+                      activeSessionId,
+                      getQueue(activeSessionId).filter((i) => i.id !== item.id)
+                    )
+                  }
+                />
+              ))}
+              {getQueue(activeSessionId).length === 0 && (
+                <p className="text-center text-xs text-muted-foreground py-6">
+                  대기 항목 없음
+                </p>
+              )}
+            </div>
+
+            {/* Input area */}
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                padding: 6,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                flexShrink: 0,
+              }}
+            >
+              <textarea
+                ref={queueInputRef}
+                value={queueInput}
+                onChange={(e) => setQueueInput(e.target.value)}
+                placeholder="명령어… (Ctrl+Enter 추가)"
+                rows={2}
+                className="font-mono text-xs resize-none bg-background rounded border border-border p-1.5 outline-none focus:border-primary"
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                    e.preventDefault();
+                    enqueue(activeSessionId, queueInput);
+                    setQueueInput("");
+                  }
+                  if (e.key === "ArrowDown" && getQueue(activeSessionId).length > 0) {
+                    e.preventDefault();
+                    setQueueFocusIdx(0);
+                    queuePanelRef.current?.focus();
+                  }
+                }}
+              />
+              <p className="text-[10px] text-muted-foreground leading-tight">
+                ↑↓ 이동 · Enter 펼치기 · E 수정 · D 삭제 · N 새 항목
+              </p>
+            </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── QueueItemRow ─────────────────────────────────────────────────────────────
+
+interface QueueItemRowProps {
+  item: QueueItem;
+  index: number;
+  focused: boolean;
+  expanded: boolean;
+  editing: boolean;
+  editText: string;
+  onFocus: () => void;
+  onToggleExpand: () => void;
+  onEditChange: (v: string) => void;
+  onEditCommit: () => void;
+  onEditCancel: () => void;
+  onStartEdit: () => void;
+  onDelete: () => void;
+}
+
+function QueueItemRow({
+  item, index, focused, expanded, editing, editText,
+  onFocus, onToggleExpand, onEditChange, onEditCommit, onEditCancel,
+  onStartEdit, onDelete,
+}: QueueItemRowProps) {
+  const editRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editing) setTimeout(() => editRef.current?.focus(), 10);
+  }, [editing]);
+
+  return (
+    <div
+      onClick={onFocus}
+      className={cn(
+        "rounded mb-1 p-1.5 text-xs cursor-pointer transition-colors border",
+        focused
+          ? "border-primary/50 bg-background"
+          : "border-transparent hover:bg-background/60"
+      )}
+    >
+      {editing ? (
+        <textarea
+          ref={editRef}
+          value={editText}
+          onChange={(e) => onEditChange(e.target.value)}
+          rows={3}
+          className="w-full font-mono text-xs resize-none bg-transparent outline-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onEditCommit(); }
+            if (e.key === "Escape") { e.stopPropagation(); onEditCancel(); }
+          }}
+        />
+      ) : (
+        <div className="flex items-start gap-1.5">
+          <span className="text-[10px] text-muted-foreground shrink-0 mt-0.5 w-3">
+            {index + 1}.
+          </span>
+          <p
+            className={cn(
+              "font-mono flex-1 break-all",
+              expanded ? "whitespace-pre-wrap" : "truncate"
+            )}
+          >
+            {item.text}
+          </p>
+          <div className="flex gap-0.5 shrink-0">
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+              className="px-1 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted"
+              title="펼치기 (Enter)"
+            >
+              {expanded ? "▲" : "▼"}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onStartEdit(); }}
+              className="px-1 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted"
+              title="수정 (E)"
+            >
+              E
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              className="px-1 text-[10px] text-muted-foreground hover:text-destructive rounded hover:bg-muted"
+              title="삭제 (D)"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

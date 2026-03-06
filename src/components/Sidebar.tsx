@@ -31,6 +31,7 @@ export function Sidebar() {
   const [claudeDirs, setClaudeDirs] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [dropupFocusIdx, setDropupFocusIdx] = useState(-1);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -54,12 +55,27 @@ export function Sidebar() {
   // Focus search when menu opens; clear when it closes
   useEffect(() => {
     if (folderMenuOpen) {
+      setDropupFocusIdx(-1);
       const t = setTimeout(() => searchRef.current?.focus(), 60);
       return () => clearTimeout(t);
     } else {
       setSearchQuery("");
+      setDropupFocusIdx(-1);
     }
   }, [folderMenuOpen]);
+
+  // Global shortcut: ⌘⇧O to toggle folder dropup
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") {
+        if (!sidebarVisible) return;
+        e.preventDefault();
+        setFolderMenuOpen((v) => !v);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarVisible]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -95,6 +111,46 @@ export function Sidebar() {
       console.error("pick_folder failed:", err);
     }
     setFolderMenuOpen(false);
+  }
+
+  // ── Filter logic (declared early so handleDropupKey can reference) ──
+  const _query = searchQuery.toLowerCase();
+  const _recentSet = new Set(recentDirs);
+  const _extraClaudeDirs = claudeDirs.filter((d) => !_recentSet.has(d));
+  const _filteredRecent = _query
+    ? recentDirs.filter((d) => d.toLowerCase().includes(_query))
+    : recentDirs;
+  const _filteredExtra = _query
+    ? _extraClaudeDirs.filter((d) => d.toLowerCase().includes(_query))
+    : _extraClaudeDirs;
+  const _allDirItems = [..._filteredRecent, ..._filteredExtra];
+
+  function handleDropupKey(e: React.KeyboardEvent) {
+    if (e.key === "Escape") { setFolderMenuOpen(false); return; }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      // allDirItems.length index = Browse button
+      setDropupFocusIdx((i) => Math.min(i + 1, _allDirItems.length));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (dropupFocusIdx <= 0) {
+        setDropupFocusIdx(-1);
+        searchRef.current?.focus();
+      } else {
+        setDropupFocusIdx((i) => i - 1);
+      }
+      return;
+    }
+    if (e.key === "Enter" && dropupFocusIdx >= 0) {
+      e.preventDefault();
+      if (dropupFocusIdx < _allDirItems.length) {
+        openDir(_allDirItems[dropupFocusIdx]);
+      } else {
+        browseFolder();
+      }
+    }
   }
 
   async function handleNewFile() {
@@ -133,17 +189,10 @@ export function Sidebar() {
     });
   }
 
-  // ── Filter logic ────────────────────────────────────────────
-  const query = searchQuery.toLowerCase();
-  const recentSet = new Set(recentDirs);
-  const extraClaudeDirs = claudeDirs.filter((d) => !recentSet.has(d));
-
-  const filteredRecent = query
-    ? recentDirs.filter((d) => d.toLowerCase().includes(query))
-    : recentDirs;
-  const filteredExtra = query
-    ? extraClaudeDirs.filter((d) => d.toLowerCase().includes(query))
-    : extraClaudeDirs;
+  // ── Filter logic aliases (use _-prefixed vars computed above) ──
+  const query = _query;
+  const filteredRecent = _filteredRecent;
+  const filteredExtra = _filteredExtra;
   const hasResults = filteredRecent.length > 0 || filteredExtra.length > 0;
 
   const currentDirName = fileTree ? fileTree.name : "No folder open";
@@ -216,6 +265,7 @@ export function Sidebar() {
               : "opacity-0 translate-y-2 scale-[0.98] pointer-events-none"
           )}
           aria-hidden={!folderMenuOpen}
+          onKeyDown={handleDropupKey}
         >
           {/* Search bar */}
           <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-2">
@@ -251,12 +301,13 @@ export function Sidebar() {
                     Recent
                   </span>
                 </div>
-                {filteredRecent.map((dir) => (
+                {filteredRecent.map((dir, idx) => (
                   <FolderItem
                     key={dir}
                     path={dir}
                     query={query}
                     isCurrent={fileTree?.path === dir}
+                    focused={dropupFocusIdx === idx}
                     onClick={() => openDir(dir)}
                   />
                 ))}
@@ -273,12 +324,13 @@ export function Sidebar() {
                     Projects
                   </span>
                 </div>
-                {filteredExtra.map((dir) => (
+                {filteredExtra.map((dir, idx) => (
                   <FolderItem
                     key={dir}
                     path={dir}
                     query={query}
                     isCurrent={fileTree?.path === dir}
+                    focused={dropupFocusIdx === filteredRecent.length + idx}
                     onClick={() => openDir(dir)}
                   />
                 ))}
@@ -295,7 +347,10 @@ export function Sidebar() {
 
             {/* Browse */}
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors",
+                dropupFocusIdx === _allDirItems.length && "bg-accent text-accent-foreground"
+              )}
               onClick={browseFolder}
             >
               <HardDrive className="h-3.5 w-3.5 shrink-0" />
@@ -349,11 +404,13 @@ function HighlightMatch({ text, query }: { text: string; query: string }) {
 function FolderItem({
   path,
   isCurrent,
+  focused,
   query,
   onClick,
 }: {
   path: string;
   isCurrent: boolean;
+  focused?: boolean;
   query: string;
   onClick: () => void;
 }) {
@@ -363,7 +420,8 @@ function FolderItem({
     <button
       className={cn(
         "flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground",
-        isCurrent && "bg-primary/10 text-primary"
+        isCurrent && "bg-primary/10 text-primary",
+        focused && !isCurrent && "bg-accent text-accent-foreground"
       )}
       onClick={onClick}
     >

@@ -36,6 +36,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // Edit
   { id: "undo",           group: "편집",    label: "실행 취소",      defaultKey: "meta+z",         display: "⌘Z" },
   { id: "slash",          group: "편집",    label: "슬래시 명령",    defaultKey: "/",              display: "/" },
+  // Terminal
+  { id: "open-folder",        group: "레이아웃", label: "폴더 열기",         defaultKey: "meta+shift+o",   display: "⌘⇧O" },
+  { id: "term-prev-session",  group: "터미널",   label: "이전 터미널 세션",   defaultKey: "ctrl+[",         display: "Ctrl+[" },
+  { id: "term-next-session",  group: "터미널",   label: "다음 터미널 세션",   defaultKey: "ctrl+]",         display: "Ctrl+]" },
+  { id: "term-queue",         group: "터미널",   label: "대기열 패널 토글",   defaultKey: "ctrl+shift+q",   display: "Ctrl+⇧Q" },
 ];
 
 /** Parse a combo string like "meta+shift+f" into its parts */
