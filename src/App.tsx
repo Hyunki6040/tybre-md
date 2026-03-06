@@ -31,6 +31,7 @@ export default function App() {
     setQuickOpenVisible,
     setFileTree,
     addRecentDir,
+    fileTree,
     settingsVisible, setSettingsVisible,
     findBarVisible, setFindBarVisible,
     projectSearchVisible, setProjectSearchVisible,
@@ -59,6 +60,47 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.setProperty("--font-size-base", `${fontSize}px`);
   }, [fontSize]);
+
+  // ── File watcher: auto-reload open tabs when external tools change files ────
+  useEffect(() => {
+    if (!fileTree) return;
+
+    let unlisten: (() => void) | null = null;
+
+    async function setup() {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { listen } = await import("@tauri-apps/api/event");
+
+      invoke("start_watching", { path: fileTree!.path }).catch(console.error);
+
+      unlisten = await listen<string>("file-changed", async (event) => {
+        const changedPath = event.payload;
+        const { tabs } = useAppStore.getState();
+        const tab = tabs.find((t) => t.filePath === changedPath);
+        // Don't overwrite unsaved user edits
+        if (!tab || tab.isDirty) return;
+
+        try {
+          const content = await invoke<string>("read_file", { path: changedPath });
+          useAppStore.setState((s) => ({
+            tabs: s.tabs.map((t) =>
+              t.id === tab.id ? { ...t, content } : t
+            ),
+          }));
+        } catch { /* file briefly locked during write, skip */ }
+      });
+    }
+
+    setup().catch(console.error);
+
+    return () => {
+      unlisten?.();
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("stop_watching").catch(() => {}))
+        .catch(() => {});
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileTree?.path]);
 
   // ── Open project from URL param (?project=<path>) ─────────────────────────
   // Used when the app is launched in a new window via QuickOpen "open project"
