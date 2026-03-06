@@ -357,6 +357,26 @@ pub fn remove_window_session(is_main: bool, project_path: Option<String>) -> Res
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Check if the `claude` CLI is available in PATH
+#[command]
+pub fn check_claude_installed() -> bool {
+    std::process::Command::new("which")
+        .arg("claude")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Reveal a file or directory in Finder (macOS: open -R)
+#[command]
+pub fn reveal_in_finder(path: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .args(["-R", &path])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn build_file_tree(path: &str) -> Result<FileEntry, String> {
     let p = Path::new(path);
     let name = p

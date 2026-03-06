@@ -92,6 +92,9 @@ interface AppState {
   projectLastTab: Record<string, string>;
   requestNewFile: () => void;
   setProjectLastTab: (projectPath: string, filePath: string) => void;
+
+  pendingTerminalCommand: string | null;
+  setPendingTerminalCommand: (cmd: string | null) => void;
 }
 
 let tabCounter = 0;
@@ -331,6 +334,9 @@ export const useAppStore = create<AppState>((set) => ({
       localStorage.setItem("tybre:projectLastTab", JSON.stringify(next));
       return { projectLastTab: next };
     }),
+
+  pendingTerminalCommand: null,
+  setPendingTerminalCommand: (cmd) => set({ pendingTerminalCommand: cmd }),
 }));
 
 // Initialize active tab

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Terminal as TerminalIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -10,9 +10,10 @@ import {
 interface StatusBarProps {
   content: string;
   className?: string;
+  onToggleTerminal?: () => void;
 }
 
-export function StatusBar({ content, className }: StatusBarProps) {
+export function StatusBar({ content, className, onToggleTerminal }: StatusBarProps) {
   const stats = useMemo(() => {
     const text = content
       .replace(/^#+\s/gm, "") // strip heading markers
@@ -24,6 +25,19 @@ export function StatusBar({ content, className }: StatusBarProps) {
 
     return { words, chars };
   }, [content]);
+
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+
+  useEffect(() => {
+    const onOnline  = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener("online",  onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online",  onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
 
   return (
     <div
@@ -42,22 +56,25 @@ export function StatusBar({ content, className }: StatusBarProps) {
 
       <span className="flex-1" />
 
+      {!isOnline && (
+        <span className="flex items-center gap-1 text-[10px] text-amber-500/80 mr-2 select-none">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500/80 shrink-0" />
+          offline
+        </span>
+      )}
+
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="flex cursor-default items-center gap-1 opacity-30 hover:opacity-70 transition-opacity">
+          <button
+            onClick={onToggleTerminal}
+            className="flex items-center gap-1 opacity-30 hover:opacity-70 transition-opacity select-none cursor-pointer"
+          >
             <TerminalIcon size={10} />
             <span>term</span>
-          </span>
+          </button>
         </TooltipTrigger>
-        <TooltipContent side="top" align="end" className="max-w-[200px]">
-          <p className="font-semibold mb-1.5">터미널 단축키</p>
-          <div className="space-y-0.5">
-            <div>⌘` — 터미널 열기/닫기</div>
-            <div>Ctrl+] / Ctrl+[ — 세션 이동</div>
-            <div>Ctrl+⇧Q — 대기열 패널</div>
-            <div>더블클릭 탭 — 이름 변경</div>
-            <div>+ — 새 세션</div>
-          </div>
+        <TooltipContent side="top" align="end">
+          <span>⌘` — 터미널 열기/닫기</span>
         </TooltipContent>
       </Tooltip>
     </div>

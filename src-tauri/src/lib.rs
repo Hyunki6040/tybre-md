@@ -29,6 +29,8 @@ pub fn run() {
             commands::load_session,
             commands::update_window_session,
             commands::remove_window_session,
+            commands::check_claude_installed,
+            commands::reveal_in_finder,
             terminal::terminal_spawn,
             terminal::terminal_write,
             terminal::terminal_resize,

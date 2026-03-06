@@ -7,6 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 // ── All tracked shortcuts ─────────────────────────────────────────────────────
@@ -135,58 +136,60 @@ function GuidePanel({
         </p>
       </div>
 
-      {/* Unused shortcuts — active, shown at top */}
-      <div className="py-1">
-        {unused.length === 0 && (
-          <p className="px-3 py-2 text-[11px] text-muted-foreground">
-            모든 단축키를 사용해봤어요 🎉
-          </p>
-        )}
-        {unused.map((s) => (
-          <div
-            key={s.id}
-            className="flex items-center justify-between px-3 py-1.5 hover:bg-accent/50 transition-colors"
-          >
-            <span className="text-[12px] text-foreground">{s.label}</span>
-            <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
-              {s.key}
-            </kbd>
-          </div>
-        ))}
-      </div>
-
-      {/* Used shortcuts — gray, collapsed */}
-      {used.length > 0 && (
-        <div className="border-t border-border">
-          <button
-            onClick={() => setUsedExpanded((v) => !v)}
-            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-accent/30"
-          >
-            {usedExpanded
-              ? <ChevronDown className="h-3 w-3 text-muted-foreground/60" />
-              : <ChevronRight className="h-3 w-3 text-muted-foreground/60" />
-            }
-            <span className="text-[10px] text-muted-foreground/60">
-              이미 써본 단축키 ({used.length})
-            </span>
-          </button>
-          {usedExpanded && (
-            <div className="pb-1">
-              {used.map((s) => (
-                <div
-                  key={s.id}
-                  className="flex items-center justify-between px-3 py-1.5"
-                >
-                  <span className="text-[12px] text-muted-foreground/50">{s.label}</span>
-                  <kbd className="rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-muted-foreground/50">
-                    {s.key}
-                  </kbd>
-                </div>
-              ))}
-            </div>
+      <ScrollArea className="max-h-[320px]">
+        {/* Unused shortcuts — active, shown at top */}
+        <div className="py-1">
+          {unused.length === 0 && (
+            <p className="px-3 py-2 text-[11px] text-muted-foreground">
+              모든 단축키를 사용해봤어요 🎉
+            </p>
           )}
+          {unused.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center justify-between px-3 py-1.5 hover:bg-accent/50 transition-colors"
+            >
+              <span className="text-[12px] text-foreground">{s.label}</span>
+              <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
+                {s.key}
+              </kbd>
+            </div>
+          ))}
         </div>
-      )}
+
+        {/* Used shortcuts — gray, collapsed */}
+        {used.length > 0 && (
+          <div className="border-t border-border">
+            <button
+              onClick={() => setUsedExpanded((v) => !v)}
+              className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-accent/30"
+            >
+              {usedExpanded
+                ? <ChevronDown className="h-3 w-3 text-muted-foreground/60" />
+                : <ChevronRight className="h-3 w-3 text-muted-foreground/60" />
+              }
+              <span className="text-[10px] text-muted-foreground/60">
+                이미 써본 단축키 ({used.length})
+              </span>
+            </button>
+            {usedExpanded && (
+              <div className="pb-1">
+                {used.map((s) => (
+                  <div
+                    key={s.id}
+                    className="flex items-center justify-between px-3 py-1.5"
+                  >
+                    <span className="text-[12px] text-muted-foreground/50">{s.label}</span>
+                    <kbd className="rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-muted-foreground/50">
+                      {s.key}
+                    </kbd>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </ScrollArea>
     </div>
   );
 }

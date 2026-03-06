@@ -328,6 +328,13 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
               : "claude\r";
             sendText(sessionId, cmd);
           }
+          const pending = useAppStore.getState().pendingTerminalCommand;
+          if (pending) {
+            const delay = autoClaudeRef.current ? 1000 : 300;
+            await new Promise<void>((res) => setTimeout(res, delay));
+            sendText(sessionId, pending + "\r");
+            useAppStore.getState().setPendingTerminalCommand(null);
+          }
         })
         .catch((err: unknown) => {
           if (inst) inst.spawned = false;
@@ -745,6 +752,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         flex: "0 0 280px",
         flexDirection: "column",
         overflow: "hidden",
+        borderTop: "1px solid var(--border)",
       }}
     >
       {/* ── Session tab bar ───────────────────────────────────────────── */}
@@ -1111,7 +1119,12 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                   </span>
                 )}
               </span>
-              <span className="text-[10px] text-muted-foreground ml-auto">Esc 닫기</span>
+              <button
+                onClick={() => setQueueOpen(false)}
+                className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X size={12} />
+              </button>
             </div>
 
             {/* Item list */}
@@ -1193,7 +1206,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                 }}
               />
               <p className="text-[10px] text-muted-foreground leading-tight">
-                ↑↓ 이동 · Enter 펼치기 · E 수정 · D 삭제 · N 새 항목
+                ↑↓ 이동 · E 수정 · D 삭제
               </p>
             </div>
           </div>
@@ -1255,7 +1268,7 @@ function QueueItemRow({
           }}
         />
       ) : (
-        <div className="flex items-start gap-1.5">
+        <div className="group flex items-start gap-1.5">
           <span className="text-[10px] text-muted-foreground shrink-0 mt-0.5 w-3">
             {index + 1}.
           </span>
@@ -1267,7 +1280,10 @@ function QueueItemRow({
           >
             {item.text}
           </p>
-          <div className="flex gap-0.5 shrink-0">
+          <div className={cn(
+            "flex gap-0.5 shrink-0 transition-opacity",
+            focused ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          )}>
             <button
               onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
               className="px-1 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted"

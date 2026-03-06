@@ -56,8 +56,15 @@ export function Sidebar() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [renameExt, setRenameExt] = useState("");
   const [isNewFile, setIsNewFile] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
+
+  // Context menu state
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number; y: number; path: string; isDir: boolean; name: string;
+  } | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -113,6 +120,18 @@ export function Sidebar() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [folderMenuOpen]);
 
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!ctxMenu) return;
+    function onDown(e: MouseEvent) {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [ctxMenu]);
+
   // React to Ctrl+N from App.tsx via counter increment
   useEffect(() => {
     if (newFileRequestedAt === 0 || !fileTree) return;
@@ -144,12 +163,14 @@ export function Sidebar() {
     setFolderMenuOpen(false);
   }
 
-  async function handleNewFile() {
+  async function handleNewFile(overrideDir?: string) {
     if (!fileTree) return;
 
     // 1. Determine target directory
     let targetDir = fileTree.path;
-    if (selectedPath) {
+    if (typeof overrideDir === "string") {
+      targetDir = overrideDir;
+    } else if (selectedPath) {
       const entry = findEntry(fileTree, selectedPath);
       if (entry) {
         targetDir = entry.is_dir
@@ -192,6 +213,7 @@ export function Sidebar() {
     setIsNewFile(true);
     setRenamingPath(newPath);
     setRenameValue(candidate.replace(/\.md$/, ""));
+    setRenameExt("");
     setTimeout(() => {
       renameInputRef.current?.focus();
       renameInputRef.current?.select();
@@ -205,7 +227,7 @@ export function Sidebar() {
     const dir = oldPath.split("/").slice(0, -1).join("/");
     const newName = isNewFile
       ? (trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`)
-      : trimmed;
+      : `${trimmed}${renameExt}`;
     const newPath = `${dir}/${newName}`;
 
     if (newPath !== oldPath) {
@@ -316,7 +338,7 @@ export function Sidebar() {
               variant="ghost"
               size="icon-sm"
               className="h-6 w-6 text-muted-foreground hover:text-foreground"
-              onClick={handleNewFile}
+              onClick={() => handleNewFile()}
               title="New File"
             >
               <FilePlus className="h-3.5 w-3.5" />
@@ -339,13 +361,21 @@ export function Sidebar() {
               isRoot
               renamingPath={renamingPath}
               renameValue={renameValue}
+              renameExt={renameExt}
               renameInputRef={renameInputRef}
               selectedPath={selectedPath}
               onSelect={setSelectedPath}
               onStartRename={(path, name) => {
                 setIsNewFile(false);
                 setRenamingPath(path);
-                setRenameValue(name.replace(/\.[^.]+$/, ""));
+                const dotIdx = name.lastIndexOf(".");
+                if (dotIdx > 0) {
+                  setRenameValue(name.slice(0, dotIdx));
+                  setRenameExt(name.slice(dotIdx));
+                } else {
+                  setRenameValue(name);
+                  setRenameExt("");
+                }
                 setTimeout(() => {
                   renameInputRef.current?.focus();
                   renameInputRef.current?.select();
@@ -354,6 +384,9 @@ export function Sidebar() {
               onRenameChange={setRenameValue}
               onCommitRename={commitRename}
               onCancelRename={cancelRename}
+              onContextMenu={(e, path, isDir, name) =>
+                setCtxMenu({ x: e.clientX, y: e.clientY, path, isDir, name })
+              }
             />
           </div>
         ) : (
@@ -365,6 +398,95 @@ export function Sidebar() {
           </div>
         )}
       </ScrollArea>
+
+      {/* ── Context menu ── */}
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          className="fixed z-[300] w-48 overflow-hidden rounded-lg border border-border bg-popover shadow-xl py-1 text-[13px]"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left"
+            onClick={async () => {
+              const { invoke } = await import("@tauri-apps/api/core");
+              await invoke("reveal_in_finder", { path: ctxMenu.path }).catch(() => {});
+              setCtxMenu(null);
+            }}
+          >
+            Finder에서 보기
+          </button>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left"
+            onClick={() => {
+              navigator.clipboard.writeText(ctxMenu.path).catch(() => {});
+              setCtxMenu(null);
+            }}
+          >
+            경로 복사
+          </button>
+          <div className="my-1 border-t border-border" />
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left"
+            onClick={() => {
+              const { path, name } = ctxMenu;
+              setCtxMenu(null);
+              setIsNewFile(false);
+              setRenamingPath(path);
+              const dotIdx = name.lastIndexOf(".");
+              if (dotIdx > 0) {
+                setRenameValue(name.slice(0, dotIdx));
+                setRenameExt(name.slice(dotIdx));
+              } else {
+                setRenameValue(name);
+                setRenameExt("");
+              }
+              setTimeout(() => {
+                renameInputRef.current?.focus();
+                renameInputRef.current?.select();
+              }, 60);
+            }}
+          >
+            이름 변경
+          </button>
+          {ctxMenu.isDir && (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left"
+              onClick={() => {
+                const dirPath = ctxMenu.path;
+                setCtxMenu(null);
+                handleNewFile(dirPath);
+              }}
+            >
+              새 파일
+            </button>
+          )}
+          <div className="my-1 border-t border-border" />
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left text-destructive"
+            onClick={async () => {
+              const { path } = ctxMenu;
+              setCtxMenu(null);
+              const { invoke } = await import("@tauri-apps/api/core");
+              await invoke("delete_file", { path }).catch(() => {});
+              // Close any open tab for this path
+              const { tabs: currentTabs } = useAppStore.getState();
+              currentTabs.forEach((t) => {
+                if (t.filePath === path || t.filePath?.startsWith(path + "/")) {
+                  useAppStore.getState().closeTab(t.id);
+                }
+              });
+              // Refresh tree
+              if (fileTree) {
+                const tree = await invoke<FileEntry>("open_folder", { path: fileTree.path }).catch(() => null);
+                if (tree) setFileTree(tree);
+              }
+            }}
+          >
+            삭제
+          </button>
+        </div>
+      )}
 
       {/* ── Bottom: folder dropup ── */}
       <div ref={menuRef} className="relative shrink-0">
@@ -565,6 +687,7 @@ interface FileTreeNodeProps {
   isRoot?: boolean;
   renamingPath?: string | null;
   renameValue?: string;
+  renameExt?: string;
   renameInputRef?: React.RefObject<HTMLInputElement | null>;
   selectedPath?: string | null;
   onSelect?: (path: string) => void;
@@ -572,6 +695,7 @@ interface FileTreeNodeProps {
   onRenameChange?: (v: string) => void;
   onCommitRename?: (path: string) => void;
   onCancelRename?: (path: string) => void;
+  onContextMenu?: (e: React.MouseEvent, path: string, isDir: boolean, name: string) => void;
 }
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
@@ -583,8 +707,9 @@ function fileExt(name: string): string {
 
 function FileTreeNode({
   entry, expandedDirs, onToggleDir, depth, isRoot,
-  renamingPath, renameValue, renameInputRef,
+  renamingPath, renameValue, renameExt, renameInputRef,
   selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
+  onContextMenu,
 }: FileTreeNodeProps) {
   const { addTab, setActiveTab, tabs, fileTree } = useAppStore();
   const isExpanded = expandedDirs.has(entry.path);
@@ -638,8 +763,9 @@ function FileTreeNode({
   // Props forwarded to child nodes
   const childProps = {
     expandedDirs, onToggleDir,
-    renamingPath, renameValue, renameInputRef,
+    renamingPath, renameValue, renameExt, renameInputRef,
     selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
+    onContextMenu,
   };
 
   // ── Root directory header ──
@@ -704,6 +830,11 @@ function FileTreeNode({
           onSelect?.(entry.path);
           handleFileClick();
         }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenu?.(e, entry.path, entry.is_dir, entry.name);
+        }}
         role={entry.is_dir ? "button" : "treeitem"}
         tabIndex={0}
         onKeyDown={(e) => {
@@ -744,19 +875,29 @@ function FileTreeNode({
           )}
         />
         {isRenaming ? (
-          <input
-            ref={renameInputRef}
-            value={renameValue ?? ""}
-            onChange={(e) => onRenameChange?.(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter")  { e.preventDefault(); e.stopPropagation(); onCommitRename?.(entry.path); }
-              if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancelRename?.(entry.path); }
-            }}
-            onBlur={() => onCommitRename?.(entry.path)}
-            onClick={(e) => e.stopPropagation()}
-            className="flex-1 min-w-0 bg-transparent outline-none text-[13px] border-b border-primary"
-            style={{ color: "var(--foreground)", caretColor: "var(--primary)" }}
-          />
+          <div className="flex items-baseline gap-0 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+            <input
+              ref={renameInputRef}
+              value={renameValue ?? ""}
+              onChange={(e) => onRenameChange?.(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter")  { e.preventDefault(); e.stopPropagation(); onCommitRename?.(entry.path); }
+                if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancelRename?.(entry.path); }
+              }}
+              onBlur={() => onCommitRename?.(entry.path)}
+              className="min-w-0 bg-transparent outline-none text-[13px] border-b border-primary"
+              style={{
+                color: "var(--foreground)",
+                caretColor: "var(--primary)",
+                width: `${Math.max((renameValue?.length ?? 0) + 1, 4)}ch`,
+              }}
+            />
+            {renameExt && (
+              <span className="text-[13px] shrink-0" style={{ color: "var(--muted-foreground)" }}>
+                {renameExt}
+              </span>
+            )}
+          </div>
         ) : (
           <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px]">
             {entry.name}
