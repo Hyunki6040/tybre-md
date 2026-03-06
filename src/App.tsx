@@ -423,17 +423,31 @@ export default function App() {
         toggleView();
         return;
       }
-      // New tab
-      if (matches("new-tab", e) || ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N"))) {
+      // Ctrl+N — new file (if project open) or new tab
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        const { fileTree } = useAppStore.getState();
+        if (fileTree) {
+          useAppStore.getState().requestNewFile();
+        } else {
+          useAppStore.getState().addTab({
+            id: `tab-${Date.now()}`, filePath: null, title: "Untitled", content: "", isDirty: false,
+          });
+        }
+        return;
+      }
+      // Ctrl+T — QuickOpen (if project open) or new tab
+      if (matches("new-tab", e)) {
         e.preventDefault();
         if (guideMode) recordShortcutUse("new-tab");
-        useAppStore.getState().addTab({
-          id: `tab-${Date.now()}`,
-          filePath: null,
-          title: "Untitled",
-          content: "",
-          isDirty: false,
-        });
+        const { fileTree } = useAppStore.getState();
+        if (fileTree) {
+          setQuickOpenVisible(true);
+        } else {
+          useAppStore.getState().addTab({
+            id: `tab-${Date.now()}`, filePath: null, title: "Untitled", content: "", isDirty: false,
+          });
+        }
         return;
       }
       // Close tab
@@ -597,8 +611,8 @@ export default function App() {
           {/* Find bar */}
           {findBarVisible && <FindBar />}
 
-          {/* Editor / viewer area */}
-          <div className={cn("editor-container", view !== "editor" && "hidden")}>
+          {/* Editor / viewer area — always visible in split-pane */}
+          <div className="editor-container">
             {activeTab ? (() => {
               const ext = getFileExt(activeTab.filePath);
               if (IMAGE_EXTS.has(ext)) {
@@ -630,7 +644,7 @@ export default function App() {
               </div>
             )}
             {activeTab && getFileExt(activeTab.filePath) === "md" && (
-              <StatusBar content={activeTab.content} />
+              <StatusBar content={activeTab.content} onToggleTerminal={toggleView} />
             )}
           </div>
 
@@ -640,11 +654,42 @@ export default function App() {
             projectPath={fileTree?.path ?? null}
             onProjectChange={async (path) => {
               const { invoke } = await import("@tauri-apps/api/core");
+
+              // Save current project's last active tab
+              const state = useAppStore.getState();
+              if (state.fileTree) {
+                const curTab = state.tabs.find((t) => t.id === state.activeTabId);
+                if (curTab?.filePath) {
+                  state.setProjectLastTab(state.fileTree.path, curTab.filePath);
+                }
+              }
+
+              // Load new project
               const tree = await invoke<import("@/store/appStore").FileEntry>(
                 "open_folder", { path }
               );
               setFileTree(tree);
               addRecentDir(path);
+
+              // Restore last tab for the new project
+              const { projectLastTab, tabs } = useAppStore.getState();
+              const lastFile = projectLastTab[path];
+              if (lastFile) {
+                const existing = tabs.find((t) => t.filePath === lastFile);
+                if (existing) {
+                  setActiveTab(existing.id);
+                } else {
+                  try {
+                    const content = await invoke<string>("read_file", { path: lastFile });
+                    const id = `tab-${Date.now()}`;
+                    useAppStore.getState().addTab({
+                      id, filePath: lastFile,
+                      title: lastFile.split("/").pop() ?? "file",
+                      content, isDirty: false,
+                    });
+                  } catch { /* file deleted — skip */ }
+                }
+              }
             }}
           />
         </div>

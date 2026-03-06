@@ -40,7 +40,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: "open-folder",        group: "레이아웃", label: "폴더 열기",         defaultKey: "meta+shift+o",   display: "⌘⇧O" },
   { id: "term-prev-session",  group: "터미널",   label: "이전 터미널 세션",   defaultKey: "ctrl+[",         display: "Ctrl+[" },
   { id: "term-next-session",  group: "터미널",   label: "다음 터미널 세션",   defaultKey: "ctrl+]",         display: "Ctrl+]" },
-  { id: "term-queue",         group: "터미널",   label: "대기열 패널 토글",   defaultKey: "ctrl+shift+q",   display: "Ctrl+⇧Q" },
+  { id: "term-queue",         group: "터미널",   label: "대기열 패널 토글",   defaultKey: "ctrl+shift+l",   display: "Ctrl+⇧L" },
 ];
 
 /** Parse a combo string like "meta+shift+f" into its parts */

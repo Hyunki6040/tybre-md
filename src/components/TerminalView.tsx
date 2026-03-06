@@ -16,9 +16,14 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Settings2, Check, Plus, X, ListTodo } from "lucide-react";
+import { Settings2, Check, Plus, X, ListOrdered } from "lucide-react";
 import { useAppStore } from "@/store/appStore";
 import { cn } from "@/lib/utils";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 // ── Terminal color palettes ──────────────────────────────────────────────────
 
@@ -113,6 +118,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   const termInstancesRef = useRef<Map<string, TermInstance>>(new Map());
   const termDivsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const busyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const busySessionsRef = useRef<Set<string>>(new Set());
 
   // Inline rename
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -124,6 +130,10 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     () => JSON.parse(localStorage.getItem("tybre:autoClaude") ?? "false")
   );
   const autoClaudeRef = useRef(autoClaude);
+  const [yoloMode, setYoloMode] = useState<boolean>(
+    () => JSON.parse(localStorage.getItem("tybre:yoloMode") ?? "false")
+  );
+  const yoloModeRef = useRef(yoloMode);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -194,6 +204,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     const timer = busyTimersRef.current.get(sessionId);
     if (timer) clearTimeout(timer);
     busyTimersRef.current.delete(sessionId);
+    busySessionsRef.current.delete(sessionId);
 
     setSessions((prev) => {
       const remaining = prev.filter((s) => s.id !== sessionId);
@@ -262,34 +273,39 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
           return;
         }
 
-        // Busy indicator — only trigger setSessions when transitioning idle→busy
-        const hadTimer = busyTimersRef.current.has(sessionId);
-        clearTimeout(busyTimersRef.current.get(sessionId));
-        if (!hadTimer) {
-          setSessions((prev) =>
-            prev.map((s) => (s.id === sessionId ? { ...s, busy: true } : s))
-          );
-        }
-        busyTimersRef.current.set(
-          sessionId,
-          setTimeout(() => {
-            busyTimersRef.current.delete(sessionId);
-            setSessions((prev) =>
-              prev.map((s) => (s.id === sessionId ? { ...s, busy: false } : s))
-            );
-          }, 1200)
-        );
-
         // Write PTY data to xterm
         const binary = atob(msg);
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         term.write(bytes);
+
+        // Busy indicator — set once when transitioning idle→busy
+        if (!busySessionsRef.current.has(sessionId)) {
+          busySessionsRef.current.add(sessionId);
+          setSessions((prev) =>
+            prev.map((s) => (s.id === sessionId ? { ...s, busy: true } : s))
+          );
+        }
+        // Reset idle timer
+        const existingTimer = busyTimersRef.current.get(sessionId);
+        if (existingTimer) clearTimeout(existingTimer);
+        const timer = setTimeout(() => {
+          busyTimersRef.current.delete(sessionId);
+          busySessionsRef.current.delete(sessionId);
+          setSessions((prev) =>
+            prev.map((s) => (s.id === sessionId ? { ...s, busy: false } : s))
+          );
+        }, 1500);
+        busyTimersRef.current.set(sessionId, timer);
       };
 
       invoke("terminal_spawn", { sessionId, cols, rows, cwd: projPath, onEvent: channel })
-        .then(() => {
-          if (projPath && autoClaudeRef.current) {
-            setTimeout(() => sendText(sessionId, "claude\r"), 700);
+        .then(async () => {
+          if (autoClaudeRef.current) {
+            await new Promise<void>((res) => setTimeout(res, 300));
+            const cmd = yoloModeRef.current
+              ? "claude --dangerously-skip-permissions\r"
+              : "claude\r";
+            sendText(sessionId, cmd);
           }
         })
         .catch((err: unknown) => {
@@ -343,7 +359,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         if (i < s.length - 1) setActiveSessionId(s[i + 1].id);
         return false;
       }
-      if (e.ctrlKey && e.shiftKey && (e.key === "q" || e.key === "Q")) {
+      if (e.ctrlKey && e.shiftKey && (e.key === "l" || e.key === "L")) {
         setQueueOpen((o) => !o);
         return false;
       }
@@ -537,6 +553,15 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     localStorage.setItem("tybre:autoClaude", JSON.stringify(next));
   }
 
+  function toggleYoloMode() {
+    setYoloMode((prev: boolean) => {
+      const next = !prev;
+      yoloModeRef.current = next;
+      localStorage.setItem("tybre:yoloMode", JSON.stringify(next));
+      return next;
+    });
+  }
+
   // ── Queue panel keyboard handler ─────────────────────────────────────────
 
   function handleQueueKeyDown(e: React.KeyboardEvent) {
@@ -588,6 +613,21 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     }
   }
 
+  // ── Queue enqueue-and-send ────────────────────────────────────────────────
+
+  function handleEnqueueAndSend() {
+    if (!activeSessionId) return;
+    const text = queueInput.trim();
+    if (!text) return;
+    const activeSession = sessions.find((s) => s.id === activeSessionId);
+    if (activeSession && !activeSession.busy) {
+      sendText(activeSessionId, text + "\r");
+    } else {
+      enqueue(activeSessionId, text);
+    }
+    setQueueInput("");
+  }
+
   // ── Render ───────────────────────────────────────────────────────────────
 
   const termBg = resolvedTheme === "ink" ? "#1C1C1E" : "#FAFAF8";
@@ -597,7 +637,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
       ref={outerRef}
       style={{
         display: visible ? "flex" : "none",
-        flex: 1,
+        flex: "0 0 280px",
         flexDirection: "column",
         overflow: "hidden",
       }}
@@ -690,23 +730,33 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
 
         {/* Queue toggle button */}
         <div className="shrink-0 flex items-center px-1">
-          <button
-            onClick={() => setQueueOpen((o) => !o)}
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors",
-              queueOpen
-                ? "text-foreground bg-background/60"
-                : "text-muted-foreground hover:text-foreground hover:bg-background/60"
-            )}
-            title="대기열 (Ctrl+⇧Q)"
-          >
-            <ListTodo size={12} />
-            {activeSessionId && getQueue(activeSessionId).length > 0 && (
-              <span className="text-[10px] tabular-nums">
-                {getQueue(activeSessionId).length}
-              </span>
-            )}
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setQueueOpen((o) => !o)}
+                className={cn(
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors",
+                  queueOpen
+                    ? "text-foreground bg-background/60"
+                    : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+                )}
+              >
+                <ListOrdered size={12} />
+                {activeSessionId && getQueue(activeSessionId).length > 0 && (
+                  <span className="text-[10px] tabular-nums">
+                    {getQueue(activeSessionId).length}
+                  </span>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="end">
+              <p className="font-semibold mb-1">프롬프트 대기열</p>
+              <p className="text-[11px] text-muted-foreground">Ctrl+⇧L</p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                명령을 미리 입력해두면<br />Claude 응답 후 자동 전송
+              </p>
+            </TooltipContent>
+          </Tooltip>
         </div>
 
         {/* Settings dropdown */}
@@ -769,6 +819,29 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                     </p>
                   </div>
                 </label>
+
+                {/* Yolo mode — only active when autoClaude is on */}
+                <div className="px-2 pb-1">
+                  <label className={cn(
+                    "flex items-center gap-2 text-[12px] cursor-pointer",
+                    !autoClaude && "opacity-40 cursor-not-allowed"
+                  )}>
+                    <input
+                      type="checkbox"
+                      checked={yoloMode}
+                      disabled={!autoClaude}
+                      onChange={toggleYoloMode}
+                      className="w-3 h-3 accent-primary"
+                    />
+                    <span>Yolo 모드</span>
+                  </label>
+                  {autoClaude && (
+                    <p className="text-[10px] text-muted-foreground ml-5 mt-0.5 leading-relaxed">
+                      확인 없이 모든 작업 자동 실행.<br />
+                      위험하지만 빠름.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -918,14 +991,14 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                 ref={queueInputRef}
                 value={queueInput}
                 onChange={(e) => setQueueInput(e.target.value)}
-                placeholder="명령어… (Ctrl+Enter 추가)"
+                placeholder="명령어… (Enter 전송, Shift+Enter 줄바꿈)"
                 rows={2}
                 className="font-mono text-xs resize-none bg-background rounded border border-border p-1.5 outline-none focus:border-primary"
                 onKeyDown={(e) => {
-                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    enqueue(activeSessionId, queueInput);
-                    setQueueInput("");
+                    handleEnqueueAndSend();
+                    return;
                   }
                   if (e.key === "ArrowDown" && getQueue(activeSessionId).length > 0) {
                     e.preventDefault();
