@@ -2,6 +2,7 @@ mod commands;
 mod terminal;
 mod watcher;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use terminal::TerminalState;
 use watcher::WatcherState;
@@ -10,7 +11,7 @@ use watcher::WatcherState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(TerminalState(Arc::new(Mutex::new(None))))
+        .manage(TerminalState(Arc::new(Mutex::new(HashMap::new()))))
         .manage(WatcherState(Arc::new(Mutex::new(None))))
         .invoke_handler(tauri::generate_handler![
             commands::read_file,

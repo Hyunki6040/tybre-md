@@ -635,7 +635,18 @@ export default function App() {
           </div>
 
           {/* Terminal — xterm.js + portable-pty */}
-          <TerminalView visible={view === "terminal"} projectPath={fileTree?.path ?? null} />
+          <TerminalView
+            visible={view === "terminal"}
+            projectPath={fileTree?.path ?? null}
+            onProjectChange={async (path) => {
+              const { invoke } = await import("@tauri-apps/api/core");
+              const tree = await invoke<import("@/store/appStore").FileEntry>(
+                "open_folder", { path }
+              );
+              setFileTree(tree);
+              addRecentDir(path);
+            }}
+          />
         </div>
 
         {/* Global overlays */}

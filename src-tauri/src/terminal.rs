@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use tauri::{command};
+use tauri::command;
 use tauri::ipc::Channel;
 
 pub struct PtySession {
@@ -10,16 +11,18 @@ pub struct PtySession {
     pair: Box<dyn portable_pty::MasterPty + Send>,
 }
 
-type PtyState = Arc<Mutex<Option<PtySession>>>;
+type PtyMap = Arc<Mutex<HashMap<String, PtySession>>>;
 
-pub struct TerminalState(pub PtyState);
+pub struct TerminalState(pub PtyMap);
 
-/// Spawn a PTY with the user's shell.
-/// `cwd` overrides the working directory (defaults to $HOME if None or path missing).
+/// Spawn a PTY for the given session_id.
+/// If a session with the same id already exists it is killed first.
+/// `cwd` sets the working directory (falls back to $HOME).
 /// `on_event` is a Tauri v2 Channel: `Some(b64)` = PTY data, `None` = shell exited.
 #[command]
 pub fn terminal_spawn(
     state: tauri::State<'_, TerminalState>,
+    session_id: String,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
@@ -27,8 +30,8 @@ pub fn terminal_spawn(
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
-    // Kill existing session if any
-    if let Some(old) = guard.take() {
+    // Kill any existing session with this id
+    if let Some(old) = guard.remove(&session_id) {
         drop(old.writer);
         drop(old.child);
         drop(old.pair);
@@ -41,7 +44,6 @@ pub fn terminal_spawn(
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
 
-    // Use provided cwd if it exists on disk, otherwise fall back to $HOME
     let start_dir = cwd
         .filter(|p| std::path::Path::new(p).is_dir())
         .unwrap_or_else(|| home.clone());
@@ -49,7 +51,6 @@ pub fn terminal_spawn(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.cwd(&start_dir);
 
-    // Forward essential environment variables
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("HOME", &home);
@@ -62,11 +63,9 @@ pub fn terminal_spawn(
     }
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
-    // Stream PTY output → Channel (base64-encoded bytes, None = exit)
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut reader = reader;
@@ -80,22 +79,22 @@ pub fn terminal_spawn(
                 }
             }
         }
-        // Notify renderer that the shell process has exited
         let _ = on_event.send(None);
     });
 
-    *guard = Some(PtySession { writer, child, pair: pair.master });
+    guard.insert(session_id, PtySession { writer, child, pair: pair.master });
     Ok(())
 }
 
-/// Send bytes to the PTY (keyboard input).
+/// Send bytes to a PTY session (keyboard input).
 #[command]
 pub fn terminal_write(
     state: tauri::State<'_, TerminalState>,
+    session_id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = guard.as_mut() {
+    if let Some(session) = guard.get_mut(&session_id) {
         use std::io::Write;
         session.writer.write_all(&data).map_err(|e| e.to_string())?;
         session.writer.flush().map_err(|e| e.to_string())?;
@@ -103,15 +102,16 @@ pub fn terminal_write(
     Ok(())
 }
 
-/// Resize the PTY.
+/// Resize a PTY session.
 #[command]
 pub fn terminal_resize(
     state: tauri::State<'_, TerminalState>,
+    session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = guard.as_ref() {
+    if let Some(session) = guard.get(&session_id) {
         session.pair.resize(PtySize {
             rows,
             cols,
@@ -122,11 +122,14 @@ pub fn terminal_resize(
     Ok(())
 }
 
-/// Kill the current PTY session.
+/// Kill a PTY session by id.
 #[command]
-pub fn terminal_kill(state: tauri::State<'_, TerminalState>) -> Result<(), String> {
+pub fn terminal_kill(
+    state: tauri::State<'_, TerminalState>,
+    session_id: String,
+) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    guard.take();
+    guard.remove(&session_id);
     Ok(())
 }
 
