@@ -5,8 +5,8 @@
  *  1. term.open() is called ONLY when the container is visible (display:flex),
  *     because xterm.js measures font metrics on open — a display:none element
  *     returns 0 sizes and breaks the renderer permanently.
- *  2. Tauri event listeners are registered BEFORE terminal_spawn is invoked,
- *     so no early PTY output (shell prompt) is lost.
+ *  2. PTY streaming uses Tauri v2 Channel API — no async listener registration,
+ *     no race conditions. Channel is created synchronously and passed to terminal_spawn.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -77,8 +77,6 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
   const fitRef         = useRef<FitAddon | null>(null);
   const spawnedRef     = useRef(false);
   const initializedRef = useRef(false);           // guards one-time setup
-  const unlistenData   = useRef<(() => void) | null>(null);
-  const unlistenExit   = useRef<(() => void) | null>(null);
 
   // Always-current refs — no stale closures in callbacks
   const projectPathRef = useRef(projectPath);
@@ -118,19 +116,43 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
     localStorage.setItem("tybre:autoClaude", JSON.stringify(next));
   }
 
-  // ── Spawn PTY (must be called after listeners are registered) ───────────
+  // ── Spawn PTY via Tauri v2 Channel (no separate event listener needed) ──
 
   function spawnPty(term: Terminal, fit: FitAddon) {
     if (spawnedRef.current) return;
     spawnedRef.current = true;
 
+    const thisTerminal = term;
     const { cols, rows } = termFitDims(fit);
     const cwd = projectPathRef.current ?? null;
 
     console.log("[terminal] spawnPty cols=%d rows=%d cwd=%s", cols, rows, cwd);
 
-    import("@tauri-apps/api/core").then(({ invoke }) => {
-      invoke("terminal_spawn", { cols, rows, cwd })
+    import("@tauri-apps/api/core").then(({ invoke, Channel }) => {
+      // Channel<string | null>: string = b64 PTY data, null = shell exited
+      const channel = new Channel<string | null>();
+      channel.onmessage = (msg) => {
+        if (termRef.current !== thisTerminal) return; // stale terminal
+        if (msg === null) {
+          // Shell exited — allow restart on any keypress
+          spawnedRef.current = false;
+          term.writeln(
+            "\r\n\x1b[33m──────────────────────────────────────\x1b[0m\r\n" +
+            "\x1b[33m  Shell 종료 — 아무 키나 누르면 재시작\x1b[0m\r\n" +
+            "\x1b[33m──────────────────────────────────────\x1b[0m"
+          );
+          const d = term.onKey(() => {
+            d.dispose();
+            if (fitRef.current) spawnPty(term, fitRef.current);
+          });
+          return;
+        }
+        const binary = atob(msg);
+        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+        term.write(bytes);
+      };
+
+      invoke("terminal_spawn", { cols, rows, cwd, onEvent: channel })
         .then(() => {
           console.log("[terminal] terminal_spawn OK");
           if (cwd && autoClaudeRef.current) {
@@ -153,8 +175,6 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
 
   useEffect(() => {
     return () => {
-      unlistenData.current?.();
-      unlistenExit.current?.();
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -207,51 +227,11 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
         });
       });
 
-      // Register Tauri event listeners FIRST, spawn PTY only after both are ready.
-      //
-      // We guard with a termRef identity check rather than a closure `cancelled` flag.
-      // A `cancelled` flag set in the [visible] effect cleanup fires whenever the user
-      // hides the terminal — permanently preventing spawnPty. termRef is set to null
-      // only by the [] unmount cleanup (or StrictMode remount), so it correctly
-      // distinguishes "this terminal is still active" vs "a new terminal replaced it".
-      import("@tauri-apps/api/event")
-        .then(async ({ listen }) => {
-          // Bail if this terminal was already replaced (StrictMode remount set termRef=null/term2)
-          if (termRef.current !== term) return;
-
-          const [ul1, ul2] = await Promise.all([
-            // PTY output → xterm display
-            listen<string>("terminal-data", (event) => {
-              const binary = atob(event.payload);
-              const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-              term.write(bytes);
-            }),
-            // Shell exited → prompt restart
-            listen<void>("terminal-exit", () => {
-              spawnedRef.current = false;
-              term.writeln(
-                "\r\n\x1b[33m──────────────────────────────────────\x1b[0m\r\n" +
-                "\x1b[33m  Shell 종료 — 아무 키나 누르면 재시작\x1b[0m\r\n" +
-                "\x1b[33m──────────────────────────────────────\x1b[0m"
-              );
-              const d = term.onKey(() => {
-                d.dispose();
-                if (fitRef.current) spawnPty(term, fitRef.current);
-              });
-            }),
-          ]);
-
-          // Check again after awaits — StrictMode unmount may have run between them
-          if (termRef.current !== term) { ul1(); ul2(); return; }
-
-          unlistenData.current = ul1;
-          unlistenExit.current = ul2;
-
-          console.log("[terminal] listeners registered, spawning PTY");
-          // PTY spawned after listeners are ready — no output will be missed
-          spawnPty(term, fit);
-        })
-        .catch(console.error);
+      // Channel-based approach: no async listener registration needed.
+      // spawnPty creates a Channel<string|null> and passes it directly to terminal_spawn.
+      // The termRef identity check inside channel.onmessage handles StrictMode remounts.
+      console.log("[terminal] init complete, spawning PTY via Channel");
+      spawnPty(term, fit);
 
       return; // no cleanup for init branch — termRef identity handles StrictMode
     }

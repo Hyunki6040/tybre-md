@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use tauri::{command, AppHandle, Emitter};
+use tauri::{command};
+use tauri::ipc::Channel;
 
 pub struct PtySession {
     writer: Box<dyn std::io::Write + Send>,
@@ -15,13 +16,14 @@ pub struct TerminalState(pub PtyState);
 
 /// Spawn a PTY with the user's shell.
 /// `cwd` overrides the working directory (defaults to $HOME if None or path missing).
+/// `on_event` is a Tauri v2 Channel: `Some(b64)` = PTY data, `None` = shell exited.
 #[command]
 pub fn terminal_spawn(
     state: tauri::State<'_, TerminalState>,
-    app: AppHandle,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    on_event: Channel<Option<String>>,
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
@@ -64,8 +66,7 @@ pub fn terminal_spawn(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
-    // Stream PTY output → Tauri event "terminal-data" (base64-encoded bytes)
-    let app_clone = app.clone();
+    // Stream PTY output → Channel (base64-encoded bytes, None = exit)
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut reader = reader;
@@ -75,12 +76,12 @@ pub fn terminal_spawn(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let b64 = encode_base64(&buf[..n]);
-                    let _ = app_clone.emit("terminal-data", b64);
+                    let _ = on_event.send(Some(b64));
                 }
             }
         }
         // Notify renderer that the shell process has exited
-        let _ = app_clone.emit("terminal-exit", ());
+        let _ = on_event.send(None);
     });
 
     *guard = Some(PtySession { writer, child, pair: pair.master });
