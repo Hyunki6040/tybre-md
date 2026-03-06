@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { useAppStore, type Tab } from "@/store/appStore";
 
 // ── Session types (must match Rust WindowSession struct) ─────────────────────
@@ -54,6 +54,65 @@ import { MilkdownEditor } from "@/editor/MilkdownEditor";
 import { TerminalView } from "@/components/TerminalView";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+
+// ── File type helpers ─────────────────────────────────────────────────────────
+
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
+
+function getFileExt(filePath: string | null): string {
+  if (!filePath) return "md";
+  return filePath.split(".").pop()?.toLowerCase() ?? "md";
+}
+
+function ImageViewer({ filePath }: { filePath: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    import("@tauri-apps/api/core").then(({ convertFileSrc }) => {
+      setSrc(convertFileSrc(filePath));
+    });
+  }, [filePath]);
+  return (
+    <div className="flex h-full w-full items-center justify-center overflow-auto p-4">
+      {src && (
+        <img
+          src={src}
+          alt={filePath.split("/").pop()}
+          className="max-h-full max-w-full object-contain"
+        />
+      )}
+    </div>
+  );
+}
+
+function PdfViewer({ filePath }: { filePath: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    import("@tauri-apps/api/core").then(({ convertFileSrc }) => {
+      setSrc(convertFileSrc(filePath));
+    });
+  }, [filePath]);
+  return (
+    <div className="flex h-full w-full">
+      {src && (
+        <iframe
+          src={src}
+          className="flex-1 w-full border-0"
+          title={filePath.split("/").pop()}
+        />
+      )}
+    </div>
+  );
+}
+
+function TxtViewer({ content }: { content: string }) {
+  return (
+    <div className="h-full w-full overflow-auto p-6">
+      <pre className="min-w-0 whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground">
+        {content}
+      </pre>
+    </div>
+  );
+}
 
 export default function App() {
   const {
@@ -118,8 +177,10 @@ export default function App() {
         const changedPath = event.payload;
         const { tabs } = useAppStore.getState();
         const tab = tabs.find((t) => t.filePath === changedPath);
-        // Don't overwrite unsaved user edits
+        // Don't overwrite unsaved user edits or binary files
         if (!tab || tab.isDirty) return;
+        const ext = getFileExt(changedPath);
+        if (!["md", "txt"].includes(ext)) return;
 
         try {
           const content = await invoke<string>("read_file", { path: changedPath });
@@ -437,6 +498,10 @@ export default function App() {
     const tab = tabs.find((t) => t.id === activeTabId);
     if (!tab) return;
 
+    // Only save text-based file types — never overwrite binary files (images, pdf)
+    const ext = getFileExt(tab.filePath);
+    if (!["md", "txt"].includes(ext) && tab.filePath !== null) return;
+
     if (!tab.filePath) {
       // No path yet — show native Save As dialog
       import("@tauri-apps/api/core").then(async ({ invoke }) => {
@@ -508,15 +573,27 @@ export default function App() {
           {/* Find bar */}
           {findBarVisible && <FindBar />}
 
-          {/* Editor view */}
+          {/* Editor / viewer area */}
           <div className={cn("editor-container", view !== "editor" && "hidden")}>
-            {activeTab ? (
-              <MilkdownEditor
-                key={activeTab.id}
-                initialContent={activeTab.content}
-                onChange={handleEditorChange}
-              />
-            ) : (
+            {activeTab ? (() => {
+              const ext = getFileExt(activeTab.filePath);
+              if (IMAGE_EXTS.has(ext)) {
+                return <ImageViewer key={activeTab.id} filePath={activeTab.filePath!} />;
+              }
+              if (ext === "pdf") {
+                return <PdfViewer key={activeTab.id} filePath={activeTab.filePath!} />;
+              }
+              if (ext === "txt") {
+                return <TxtViewer key={activeTab.id} content={activeTab.content} />;
+              }
+              return (
+                <MilkdownEditor
+                  key={activeTab.id}
+                  initialContent={activeTab.content}
+                  onChange={handleEditorChange}
+                />
+              );
+            })() : (
               <div className="flex h-full flex-col items-center justify-center gap-2" style={{ color: "var(--status-text)" }}>
                 <p className="text-sm font-medium">No file open</p>
                 <p className="text-xs">
@@ -528,7 +605,9 @@ export default function App() {
                 </p>
               </div>
             )}
-            {activeTab && <StatusBar content={activeTab.content} />}
+            {activeTab && getFileExt(activeTab.filePath) === "md" && (
+              <StatusBar content={activeTab.content} />
+            )}
           </div>
 
           {/* Terminal — xterm.js + portable-pty */}

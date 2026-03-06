@@ -203,9 +203,14 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
         });
       });
 
-      // Register Tauri event listeners FIRST, spawn PTY only after both are ready
+      // Register Tauri event listeners FIRST, spawn PTY only after both are ready.
+      // cancelled flag prevents StrictMode double-invoke race: if the cleanup effect
+      // runs before this async block resolves, we abandon the init so mount-2 can
+      // build the correct listeners bound to its own terminal instance.
+      let cancelled = false;
       import("@tauri-apps/api/event")
         .then(async ({ listen }) => {
+          if (cancelled) return;
           const [ul1, ul2] = await Promise.all([
             // PTY output → xterm display
             listen<string>("terminal-data", (event) => {
@@ -227,6 +232,10 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
               });
             }),
           ]);
+
+          // Check again after the two awaits — cleanup may have run during them
+          if (cancelled) { ul1(); ul2(); return; }
+
           unlistenData.current = ul1;
           unlistenExit.current = ul2;
 
@@ -235,7 +244,7 @@ export function TerminalView({ visible, projectPath }: TerminalViewProps) {
         })
         .catch(console.error);
 
-      return; // no cleanup needed from init branch
+      return () => { cancelled = true; }; // cancel pending async if effect is torn down
     }
 
     // ── Already initialized: refit to current dimensions ─────────────────
