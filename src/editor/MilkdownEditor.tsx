@@ -1,19 +1,32 @@
 /**
  * MilkdownEditor component
  *
- * Sets up Milkdown with GFM preset + custom HeadingNodeView (syntax-reveal PoC).
- *
- * Key fix: React StrictMode in dev mode runs effects twice (mount→unmount→mount).
- * We guard against this with a `destroyed` flag and a microtask defer so the
- * cleanup from the first run completes before the second init starts.
+ * Sets up Milkdown with GFM preset + custom HeadingNodeView (syntax-reveal PoC)
+ * + Slash command palette ("/") for markdown-unaware users.
  */
 
-import { useEffect, useRef } from "react";
-import { Editor, rootCtx, defaultValueCtx, editorViewCtx } from "@milkdown/core";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import {
+  Editor,
+  rootCtx,
+  defaultValueCtx,
+  editorViewCtx,
+  prosePluginsCtx,
+} from "@milkdown/core";
 import { commonmark } from "@milkdown/preset-commonmark";
 import { gfm } from "@milkdown/preset-gfm";
 import { listener, listenerCtx } from "@milkdown/plugin-listener";
+import { keymap } from "prosemirror-keymap";
+import { undo, redo } from "prosemirror-history";
 import { headingNodeViewFactory, updateAllHeadingFocus } from "./SyntaxRevealNodeView";
+import {
+  createSlashPlugin,
+  executeSlashCommand,
+  SlashMenu,
+  type SlashPluginState,
+} from "./SlashCommand";
+import { createShikiPlugin } from "./shikiPlugin";
+import type { EditorView } from "prosemirror-view";
 
 interface MilkdownEditorProps {
   initialContent: string;
@@ -29,9 +42,53 @@ export function MilkdownEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-
-  // Capture initial content only once (key prop handles tab switching)
   const initialContentRef = useRef(initialContent);
+
+  // Slash command state
+  const [slashState, setSlashState] = useState<SlashPluginState | null>(null);
+  const [slashCoords, setSlashCoords] = useState<{ top: number; left: number } | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
+
+  // Stable callback for slash plugin (no re-render dependency)
+  const onSlashUpdate = useRef(
+    (state: SlashPluginState | null, coords: { top: number; left: number } | null) => {
+      setSlashState(state?.active ? state : null);
+      setSlashCoords(coords);
+    }
+  );
+
+  // Slash plugin instance — created once
+  const slashPlugin = useMemo(
+    () => createSlashPlugin((s, c) => onSlashUpdate.current(s, c)),
+    []
+  );
+
+  // Shiki syntax highlighting plugin — created once
+  const shikiPlugin = useMemo(() => createShikiPlugin(), []);
+
+  const handleSlashSelect = useCallback(
+    (commandId: string) => {
+      if (!viewRef.current || !slashState) return;
+      executeSlashCommand(viewRef.current, commandId, slashState.from, slashState.replaceFrom);
+      // Tell the plugin to close
+      try {
+        viewRef.current.dispatch(
+          viewRef.current.state.tr.setMeta("slash-close", true)
+        );
+      } catch { /* view might be mid-update */ }
+      setSlashState(null);
+    },
+    [slashState]
+  );
+
+  const handleSlashClose = useCallback(() => {
+    try {
+      viewRef.current?.dispatch(
+        viewRef.current.state.tr.setMeta("slash-close", true)
+      );
+    } catch { /* noop */ }
+    setSlashState(null);
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -40,9 +97,7 @@ export function MilkdownEditor({
     let editor: Editor | null = null;
 
     async function init() {
-      // Defer one microtask — lets StrictMode's cleanup from the first
-      // invocation complete before we start the real initialization.
-      await Promise.resolve();
+      await Promise.resolve(); // let StrictMode cleanup finish
       if (destroyed || !containerRef.current) return;
 
       try {
@@ -56,6 +111,17 @@ export function MilkdownEditor({
             ctx.get(listenerCtx).markdownUpdated((_ctx, markdown) => {
               if (!destroyed) onChangeRef.current?.(markdown);
             });
+            // Register the slash plugin + Ctrl+Z undo (Mac: Cmd+Z is default, add Ctrl as alias)
+            ctx.update(prosePluginsCtx, (plugins) => [
+              ...plugins,
+              slashPlugin,
+              shikiPlugin,
+              keymap({
+                "Ctrl-z": undo,
+                "Ctrl-y": redo,
+                "Ctrl-Shift-z": redo,
+              }),
+            ]);
           })
           .create();
 
@@ -65,13 +131,10 @@ export function MilkdownEditor({
           return;
         }
 
-        // Inject HeadingNodeView for syntax-reveal after editor is live.
-        // Also patch dispatchTransaction so selection-only transactions
-        // (cursor moves without content changes) also update focus state —
-        // NodeView.update() only fires on content/attr changes, not on
-        // cursor movement alone.
+        // Inject HeadingNodeView + patch dispatchTransaction for selection tracking
         editor.action((ctx) => {
           const view = ctx.get(editorViewCtx);
+          viewRef.current = view;
           view.setProps({
             nodeViews: {
               ...view.props.nodeViews,
@@ -93,15 +156,26 @@ export function MilkdownEditor({
 
     return () => {
       destroyed = true;
+      viewRef.current = null;
       editor?.destroy();
       editor = null;
     };
-  }, []); // Empty deps — key prop handles remount per tab
+  }, []); // key prop handles tab switching
 
   return (
-    <div
-      ref={containerRef}
-      className={`milkdown-wrapper editor-area ${className ?? ""}`}
-    />
+    <>
+      <div
+        ref={containerRef}
+        className={`milkdown-wrapper editor-area ${className ?? ""}`}
+      />
+      {slashState && slashCoords && (
+        <SlashMenu
+          state={slashState}
+          coords={slashCoords}
+          onSelect={handleSlashSelect}
+          onClose={handleSlashClose}
+        />
+      )}
+    </>
   );
 }
