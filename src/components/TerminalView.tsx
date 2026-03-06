@@ -165,11 +165,13 @@ export function TerminalView({ visible }: TerminalViewProps) {
 }
 
 function termFitDims(fit: FitAddon): { cols: number; rows: number } {
-  // FitAddon doesn't expose proposeDimensions reliably in all versions
-  // Use the terminal's current dimensions after fit
   const proposed = (fit as any).proposeDimensions?.();
+  // proposeDimensions() can return NaN when the container is display:none
+  // (parseInt on empty computed style → NaN, Math.max(2, NaN) → NaN).
+  // NaN serialises to JSON null, which Tauri rejects as invalid u16.
+  // Number.isFinite guards against null / undefined / NaN simultaneously.
   return {
-    cols: proposed?.cols ?? 80,
-    rows: proposed?.rows ?? 24,
+    cols: Number.isFinite(proposed?.cols) ? Math.max(2, proposed.cols) : 80,
+    rows: Number.isFinite(proposed?.rows) ? Math.max(1, proposed.rows) : 24,
   };
 }
