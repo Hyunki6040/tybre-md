@@ -3,6 +3,7 @@ import { create } from "zustand";
 export interface Tab {
   id: string;
   filePath: string | null;
+  projectPath: string | null;
   title: string;
   content: string;
   isDirty: boolean;
@@ -18,20 +19,46 @@ export interface FileEntry {
 export type Theme = "paper" | "ink" | "system";
 export type View = "editor" | "terminal";
 
+export interface ShortcutStats {
+  used: Record<string, number>; // per-shortcut keyboard use counts { "new-tab": 3 }
+  mouse: number;                // total mouse actions where a shortcut existed
+}
+
+export interface GuideHint {
+  shortcut: string;
+  label: string;
+}
+
 interface AppState {
   tabs: Tab[];
   activeTabId: string | null;
   closedTabs: Tab[]; // Cmd+Shift+T restore stack (max 10)
+  groupOrder: string[]; // MRU order of group keys (projectPath | "__none__")
 
   sidebarVisible: boolean;
   sidebarWidth: number;
   fileTree: FileEntry | null; // shared for QuickOpen access
+  recentDirs: string[];       // recently opened directories (max 8)
 
   theme: Theme;
   resolvedTheme: "paper" | "ink";
 
   view: View;
   quickOpenVisible: boolean;
+  settingsVisible: boolean;
+  findBarVisible: boolean;
+  projectSearchVisible: boolean;
+  exportVisible: boolean;
+  customShortcuts: Record<string, string>; // id -> combo string override
+
+  // Editor settings
+  fontSize: number;       // 14-20px
+  autoSave: boolean;
+
+  // Guide mode
+  guideMode: boolean;
+  shortcutStats: ShortcutStats;
+  guideHint: GuideHint | null;
 
   addTab: (tab: Tab) => void;
   closeTab: (tabId: string) => void;
@@ -42,10 +69,29 @@ interface AppState {
 
   toggleSidebar: () => void;
   setFileTree: (tree: FileEntry | null) => void;
+  addRecentDir: (path: string) => void;
   setTheme: (theme: Theme) => void;
   setResolvedTheme: (theme: "paper" | "ink") => void;
   toggleView: () => void;
   setQuickOpenVisible: (visible: boolean) => void;
+  setSettingsVisible: (visible: boolean) => void;
+  setFindBarVisible: (visible: boolean) => void;
+  setProjectSearchVisible: (visible: boolean) => void;
+  setExportVisible: (visible: boolean) => void;
+  setCustomShortcut: (id: string, combo: string) => void;
+  resetCustomShortcut: (id: string) => void;
+  setFontSize: (size: number) => void;
+  setAutoSave: (enabled: boolean) => void;
+
+  toggleGuideMode: () => void;
+  recordShortcutUse: (id: string) => void;
+  recordMouseAction: (shortcut: string, label: string) => void;
+  clearGuideHint: () => void;
+
+  newFileRequestedAt: number;
+  projectLastTab: Record<string, string>;
+  requestNewFile: () => void;
+  setProjectLastTab: (projectPath: string, filePath: string) => void;
 }
 
 let tabCounter = 0;
@@ -59,6 +105,7 @@ export const useAppStore = create<AppState>((set) => ({
     {
       id: generateTabId(),
       filePath: null,
+      projectPath: null,
       title: "Untitled",
       content: "# Welcome to Tybre.md\n\nStart typing your markdown here...\n\nThis is a **WYSIWYG** markdown editor. Try:\n- `## Heading` — cursor inside reveals the `##` prefix\n- `**bold**` — cursor reveals the `**` markers\n- `*italic*` — same syntax-reveal behavior\n",
       isDirty: false,
@@ -66,16 +113,38 @@ export const useAppStore = create<AppState>((set) => ({
   ],
   activeTabId: null,
   closedTabs: [],
+  groupOrder: [],
 
   sidebarVisible: true,
   sidebarWidth: 240,
   fileTree: null,
+  recentDirs: JSON.parse(localStorage.getItem("tybre:recentDirs") ?? "[]"),
 
   theme: "system",
   resolvedTheme: "paper",
 
   view: "editor",
   quickOpenVisible: false,
+  settingsVisible: false,
+  findBarVisible: false,
+  projectSearchVisible: false,
+  exportVisible: false,
+  customShortcuts: JSON.parse(localStorage.getItem("tybre:customShortcuts") ?? "{}"),
+
+  fontSize: parseInt(localStorage.getItem("tybre:fontSize") ?? "16", 10),
+  autoSave: JSON.parse(localStorage.getItem("tybre:autoSave") ?? "true"),
+
+  newFileRequestedAt: 0,
+  projectLastTab: JSON.parse(localStorage.getItem("tybre:projectLastTab") ?? "{}"),
+
+  guideMode: JSON.parse(localStorage.getItem("tybre:guideMode") ?? "false"),
+  shortcutStats: (() => {
+    const raw = JSON.parse(localStorage.getItem("tybre:shortcutStats") ?? '{"used":{},"mouse":0}');
+    // Migrate old format where used was a number
+    if (typeof raw.used === "number") return { used: {}, mouse: raw.mouse ?? 0 };
+    return raw;
+  })(),
+  guideHint: null,
 
   addTab: (tab) => {
     set((state) => ({
@@ -119,7 +188,12 @@ export const useAppStore = create<AppState>((set) => ({
   },
 
   setActiveTab: (tabId) => {
-    set({ activeTabId: tabId });
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      const key = tab?.projectPath ?? "__none__";
+      const order = [key, ...state.groupOrder.filter((k) => k !== key)];
+      return { activeTabId: tabId, groupOrder: order };
+    });
   },
 
   updateTabContent: (tabId, content) => {
@@ -144,6 +218,14 @@ export const useAppStore = create<AppState>((set) => ({
 
   setFileTree: (tree) => {
     set({ fileTree: tree });
+  },
+
+  addRecentDir: (path) => {
+    set((state) => {
+      const next = [path, ...state.recentDirs.filter((d) => d !== path)].slice(0, 8);
+      localStorage.setItem("tybre:recentDirs", JSON.stringify(next));
+      return { recentDirs: next };
+    });
   },
 
   setTheme: (theme) => {
@@ -171,6 +253,84 @@ export const useAppStore = create<AppState>((set) => ({
   setQuickOpenVisible: (visible) => {
     set({ quickOpenVisible: visible });
   },
+
+  setSettingsVisible: (visible) => {
+    set({ settingsVisible: visible });
+  },
+
+  setFindBarVisible: (visible) => { set({ findBarVisible: visible }); },
+  setProjectSearchVisible: (visible) => { set({ projectSearchVisible: visible }); },
+  setExportVisible: (visible) => { set({ exportVisible: visible }); },
+
+  setCustomShortcut: (id, combo) => {
+    set((state) => {
+      const next = { ...state.customShortcuts, [id]: combo };
+      localStorage.setItem("tybre:customShortcuts", JSON.stringify(next));
+      return { customShortcuts: next };
+    });
+  },
+
+  resetCustomShortcut: (id) => {
+    set((state) => {
+      const next = { ...state.customShortcuts };
+      delete next[id];
+      localStorage.setItem("tybre:customShortcuts", JSON.stringify(next));
+      return { customShortcuts: next };
+    });
+  },
+
+  setFontSize: (size) => {
+    const clamped = Math.min(20, Math.max(14, size));
+    localStorage.setItem("tybre:fontSize", String(clamped));
+    document.documentElement.style.setProperty("--font-size-base", `${clamped}px`);
+    set({ fontSize: clamped });
+  },
+
+  setAutoSave: (enabled) => {
+    localStorage.setItem("tybre:autoSave", JSON.stringify(enabled));
+    set({ autoSave: enabled });
+  },
+
+  toggleGuideMode: () => {
+    set((state) => {
+      const next = !state.guideMode;
+      localStorage.setItem("tybre:guideMode", JSON.stringify(next));
+      return { guideMode: next };
+    });
+  },
+
+  recordShortcutUse: (id) => {
+    set((state) => {
+      const prev = state.shortcutStats.used ?? {};
+      const stats = {
+        ...state.shortcutStats,
+        used: { ...prev, [id]: (prev[id] ?? 0) + 1 },
+      };
+      localStorage.setItem("tybre:shortcutStats", JSON.stringify(stats));
+      return { shortcutStats: stats };
+    });
+  },
+
+  recordMouseAction: (shortcut, label) => {
+    set((state) => {
+      const stats = { ...state.shortcutStats, mouse: state.shortcutStats.mouse + 1 };
+      localStorage.setItem("tybre:shortcutStats", JSON.stringify(stats));
+      return { shortcutStats: stats, guideHint: { shortcut, label } };
+    });
+  },
+
+  clearGuideHint: () => {
+    set({ guideHint: null });
+  },
+
+  requestNewFile: () => set((s) => ({ newFileRequestedAt: s.newFileRequestedAt + 1 })),
+
+  setProjectLastTab: (projectPath, filePath) =>
+    set((state) => {
+      const next = { ...state.projectLastTab, [projectPath]: filePath };
+      localStorage.setItem("tybre:projectLastTab", JSON.stringify(next));
+      return { projectLastTab: next };
+    }),
 }));
 
 // Initialize active tab

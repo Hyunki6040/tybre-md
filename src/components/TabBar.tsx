@@ -1,8 +1,7 @@
-import { useState, useRef, useEffect } from "react";
-import { Plus, X, PanelLeft, Keyboard, ChevronDown, ChevronRight } from "lucide-react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { Plus, X, PanelLeft, Keyboard, ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import { useAppStore, type Tab } from "@/store/appStore";
 import { Button } from "@/components/ui/button";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import {
   Tooltip,
   TooltipContent,
@@ -192,17 +191,135 @@ function GuidePanel({
   );
 }
 
+// ── Group types & helpers ─────────────────────────────────────────────────────
+interface TabGroup {
+  key: string;
+  projectName: string;
+  projectPath: string | null;
+  tabs: Tab[];
+}
+
+function computeGroups(tabs: Tab[], groupOrder: string[]): TabGroup[] {
+  const groupMap = new Map<string, Tab[]>();
+  for (const tab of tabs) {
+    const key = tab.projectPath ?? "__none__";
+    if (!groupMap.has(key)) groupMap.set(key, []);
+    groupMap.get(key)!.push(tab);
+  }
+
+  const keys = [...groupMap.keys()];
+  keys.sort((a, b) => {
+    if (a === "__none__") return 1;
+    if (b === "__none__") return -1;
+    const ai = groupOrder.indexOf(a);
+    const bi = groupOrder.indexOf(b);
+    if (ai === -1 && bi === -1) return 0;
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+
+  return keys.map((key) => ({
+    key,
+    projectName: key === "__none__" ? "Untitled" : (key.split("/").pop() ?? key),
+    projectPath: key === "__none__" ? null : key,
+    tabs: groupMap.get(key)!,
+  }));
+}
+
+// Layout constants
+const GROUP_HEADER_PX = 88;
+const TAB_MIN_PX = 72;
+const TAB_MAX_PX = 160;
+const TOOLS_BASE_PX = 112; // New Tab + Guide + Sidebar buttons
+const OVERFLOW_BTN_PX = 40;
+
 // ── TabBar ────────────────────────────────────────────────────────────────────
 export function TabBar() {
   const {
-    tabs, activeTabId, closeTab, setActiveTab, addTab, toggleSidebar,
+    tabs, activeTabId, closeTab, setActiveTab, addTab, toggleSidebar, fileTree,
     sidebarVisible, guideMode, toggleGuideMode, shortcutStats, recordMouseAction,
+    groupOrder,
   } = useAppStore();
 
   const [guidePanelOpen, setGuidePanelOpen] = useState(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Overflow dropdown
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowRef = useRef<HTMLDivElement>(null);
+
+  // Container width measurement
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(1200);
+
+  // Group expanded state — initially expand the active tab's group
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
+    const activeTab = tabs.find((t) => t.id === activeTabId);
+    return new Set([activeTab?.projectPath ?? "__none__"]);
+  });
+
   const level = skillLevel(shortcutStats.used ?? {}, shortcutStats.mouse);
+
+  // ResizeObserver
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setContainerWidth(el.offsetWidth);
+    });
+    ro.observe(el);
+    setContainerWidth(el.offsetWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  // Auto-expand the active tab's group when it changes
+  useEffect(() => {
+    if (!activeTabId) return;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    const key = tab?.projectPath ?? "__none__";
+    setExpandedGroups((prev) => {
+      if (prev.has(key)) return prev;
+      return new Set([...prev, key]);
+    });
+  }, [activeTabId, tabs]);
+
+  // Close overflow dropdown on outside click
+  useEffect(() => {
+    if (!overflowOpen) return;
+    function onDown(e: MouseEvent) {
+      if (!overflowRef.current?.contains(e.target as Node)) setOverflowOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [overflowOpen]);
+
+  // Computed groups
+  const groups = useMemo(() => computeGroups(tabs, groupOrder), [tabs, groupOrder]);
+  const showHeaders = groups.length > 1;
+
+  // Layout calculation (two-pass to handle overflow button appearing)
+  const fixedHeadersPx = showHeaders ? groups.length * GROUP_HEADER_PX : 0;
+  const allExpandedTabs = groups.flatMap((g) =>
+    expandedGroups.has(g.key) ? g.tabs : []
+  );
+  const totalTabCount = allExpandedTabs.length;
+
+  // Pass 1: check if overflow exists without overflow button
+  const avail1 = Math.max(0, containerWidth - TOOLS_BASE_PX - fixedHeadersPx);
+  const fit1 = Math.floor(avail1 / TAB_MIN_PX);
+  const hasOverflow = totalTabCount > fit1;
+
+  // Pass 2: recalculate with overflow button reserved if needed
+  const toolsPx = TOOLS_BASE_PX + (hasOverflow ? OVERFLOW_BTN_PX : 0);
+  const available = Math.max(0, containerWidth - toolsPx - fixedHeadersPx);
+  const fittingCount = Math.floor(available / TAB_MIN_PX);
+  const tabMaxWidth = totalTabCount > 0
+    ? Math.min(TAB_MAX_PX, Math.max(TAB_MIN_PX, available / totalTabCount))
+    : TAB_MAX_PX;
+
+  const overflowTabs = allExpandedTabs.slice(fittingCount);
+  const overflowTabIds = new Set(overflowTabs.map((t) => t.id));
 
   function openPanel() {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
@@ -214,7 +331,14 @@ export function TabBar() {
 
   function handleNewTab() {
     if (guideMode) recordMouseAction("⌘T", "새 탭");
-    addTab({ id: `tab-${Date.now()}`, filePath: null, title: "Untitled", content: "", isDirty: false });
+    addTab({
+      id: `tab-${Date.now()}`,
+      filePath: null,
+      projectPath: fileTree?.path ?? null,
+      title: "Untitled",
+      content: "",
+      isDirty: false,
+    });
   }
 
   function handleToggleSidebar() {
@@ -232,98 +356,194 @@ export function TabBar() {
     if (e.button === 1) { e.preventDefault(); closeTab(tabId); }
   }
 
+  function toggleGroup(key: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   const skillLabels = ["단축키 입문자", "조금 활용 중", "절반은 활용!", "능숙한 편", "단축키 마스터"];
 
   return (
     <>
-      <div className="flex h-[36px] items-stretch border-b border-border bg-muted">
-        <ScrollArea className="flex-1">
-          <div className="flex h-[36px] items-stretch" role="tablist">
-            {tabs.map((tab) => (
-              <TabItem
-                key={tab.id}
-                tab={tab}
-                isActive={tab.id === activeTabId}
-                onClick={() => setActiveTab(tab.id)}
-                onClose={(e) => handleCloseTab(e, tab.id)}
-                onMiddleClick={(e) => handleMiddleClick(e, tab.id)}
-              />
-            ))}
-          </div>
-          <ScrollBar orientation="horizontal" />
-        </ScrollArea>
+      <div
+        ref={containerRef}
+        className="flex h-[36px] items-stretch border-b border-border bg-muted overflow-hidden"
+      >
+        {/* Groups + tabs area */}
+        <div className="flex flex-1 items-stretch overflow-hidden min-w-0">
+          {groups.map((group) => {
+            const isExpanded = expandedGroups.has(group.key);
+            const groupVisibleTabs = isExpanded
+              ? group.tabs.filter((t) => !overflowTabIds.has(t.id))
+              : [];
 
-        {/* New Tab */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost" size="icon-sm"
-              className="mx-1 my-auto shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={handleNewTab}
-              aria-label="New tab"
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            New Tab <kbd className="ml-1 rounded bg-muted px-1 text-[10px]">⌘T</kbd>
-          </TooltipContent>
-        </Tooltip>
+            return (
+              <div key={group.key} className="flex items-stretch shrink-0">
+                {/* Group header — only when multiple groups exist */}
+                {showHeaders && (
+                  <button
+                    onClick={() => toggleGroup(group.key)}
+                    title={group.projectPath ?? "Untitled"}
+                    style={{ maxWidth: GROUP_HEADER_PX }}
+                    className={cn(
+                      "flex items-center gap-1 px-2 shrink-0 select-none transition-colors",
+                      "bg-muted text-[11px] font-semibold",
+                      "border-r-2 border-border hover:bg-muted-foreground/10",
+                      isExpanded ? "border-r-primary/40" : "border-r-border"
+                    )}
+                  >
+                    {isExpanded
+                      ? <ChevronDown className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                      : <ChevronRight className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                    }
+                    <span className="truncate text-foreground/70">{group.projectName}</span>
+                  </button>
+                )}
 
-        {/* Guide Mode — hover shows panel, click toggles on/off */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={toggleGuideMode}
-              onMouseEnter={() => { if (guideMode) openPanel(); }}
-              onMouseLeave={closePanel}
-              aria-label={guideMode ? "단축키 가이드 켜짐" : "단축키 가이드 꺼짐"}
-              className={cn(
-                "mx-0.5 my-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 transition-colors",
-                guideMode
-                  ? "text-primary hover:text-primary/80"
-                  : "text-muted-foreground/40 hover:text-muted-foreground"
+                {/* Visible tabs in this group */}
+                {groupVisibleTabs.map((tab) => (
+                  <TabItem
+                    key={tab.id}
+                    tab={tab}
+                    isActive={tab.id === activeTabId}
+                    maxWidth={Math.floor(tabMaxWidth)}
+                    onClick={() => setActiveTab(tab.id)}
+                    onClose={(e) => handleCloseTab(e, tab.id)}
+                    onMiddleClick={(e) => handleMiddleClick(e, tab.id)}
+                  />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Tools area */}
+        <div className="flex items-center shrink-0">
+          {/* Overflow dropdown */}
+          {overflowTabs.length > 0 && (
+            <div className="relative" ref={overflowRef}>
+              <button
+                onClick={() => setOverflowOpen((o) => !o)}
+                title={`${overflowTabs.length}개 탭 더 보기`}
+                className={cn(
+                  "flex items-center gap-0.5 px-1.5 py-0.5 mx-0.5 rounded text-[11px] font-mono font-medium shrink-0 transition-colors",
+                  overflowOpen
+                    ? "bg-background/80 text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+                )}
+              >
+                <MoreHorizontal className="h-3 w-3" />
+                <span>{overflowTabs.length}</span>
+              </button>
+
+              {overflowOpen && (
+                <div className="absolute right-0 top-full z-50 mt-0.5 w-52 rounded-md border border-border bg-popover shadow-lg overflow-hidden">
+                  {overflowTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors hover:bg-accent",
+                        tab.id === activeTabId && "bg-accent/50 text-foreground"
+                      )}
+                      onClick={() => {
+                        setActiveTab(tab.id);
+                        setOverflowOpen(false);
+                        const key = tab.projectPath ?? "__none__";
+                        setExpandedGroups((prev) => new Set([...prev, key]));
+                      }}
+                    >
+                      {tab.isDirty && (
+                        <span className="text-[10px] text-warning shrink-0">●</span>
+                      )}
+                      <span className="flex-1 truncate">{tab.title}</span>
+                      {showHeaders && tab.projectPath && (
+                        <span className="text-[10px] text-muted-foreground shrink-0">
+                          {tab.projectPath.split("/").pop()}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               )}
-            >
-              <Keyboard className="h-3.5 w-3.5" />
-              {guideMode && <SignalBars level={level} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-[200px] text-center">
-            {guideMode ? (
-              <>
-                <div className="font-medium">단축키 가이드 ON</div>
-                <div className="text-[11px] text-muted-foreground">{skillLabels[level]}</div>
-                <div className="mt-1 text-[10px] text-muted-foreground/70">hover → 단축키 목록 / click → 끄기</div>
-              </>
-            ) : (
-              <>
-                <div className="font-medium">단축키 가이드</div>
-                <div className="text-[11px] text-muted-foreground">click → 켜기</div>
-              </>
-            )}
-          </TooltipContent>
-        </Tooltip>
+            </div>
+          )}
 
-        {/* Sidebar Toggle */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost" size="icon-sm"
-              className={cn(
-                "mr-1 my-auto shrink-0 transition-colors",
-                sidebarVisible ? "text-primary hover:text-primary/80" : "text-muted-foreground hover:text-foreground"
+          {/* New Tab */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost" size="icon-sm"
+                className="mx-1 my-auto shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={handleNewTab}
+                aria-label="New tab"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              New Tab <kbd className="ml-1 rounded bg-muted px-1 text-[10px]">⌘T</kbd>
+            </TooltipContent>
+          </Tooltip>
+
+          {/* Guide Mode */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={toggleGuideMode}
+                onMouseEnter={() => { if (guideMode) openPanel(); }}
+                onMouseLeave={closePanel}
+                aria-label={guideMode ? "단축키 가이드 켜짐" : "단축키 가이드 꺼짐"}
+                className={cn(
+                  "mx-0.5 my-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 transition-colors",
+                  guideMode
+                    ? "text-primary hover:text-primary/80"
+                    : "text-muted-foreground/40 hover:text-muted-foreground"
+                )}
+              >
+                <Keyboard className="h-3.5 w-3.5" />
+                {guideMode && <SignalBars level={level} />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[200px] text-center">
+              {guideMode ? (
+                <>
+                  <div className="font-medium">단축키 가이드 ON</div>
+                  <div className="text-[11px] text-muted-foreground">{skillLabels[level]}</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground/70">hover → 단축키 목록 / click → 끄기</div>
+                </>
+              ) : (
+                <>
+                  <div className="font-medium">단축키 가이드</div>
+                  <div className="text-[11px] text-muted-foreground">click → 켜기</div>
+                </>
               )}
-              onClick={handleToggleSidebar}
-              aria-label="Toggle sidebar"
-            >
-              <PanelLeft className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Sidebar <kbd className="ml-1 rounded bg-muted px-1 text-[10px]">⌘\</kbd>
-          </TooltipContent>
-        </Tooltip>
+            </TooltipContent>
+          </Tooltip>
+
+          {/* Sidebar Toggle */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost" size="icon-sm"
+                className={cn(
+                  "mr-1 my-auto shrink-0 transition-colors",
+                  sidebarVisible ? "text-primary hover:text-primary/80" : "text-muted-foreground hover:text-foreground"
+                )}
+                onClick={handleToggleSidebar}
+                aria-label="Toggle sidebar"
+              >
+                <PanelLeft className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              Sidebar <kbd className="ml-1 rounded bg-muted px-1 text-[10px]">⌘\</kbd>
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {/* Guide panel (hover) */}
@@ -344,12 +564,13 @@ export function TabBar() {
 interface TabItemProps {
   tab: Tab;
   isActive: boolean;
+  maxWidth: number;
   onClick: () => void;
   onClose: (e: React.MouseEvent) => void;
   onMiddleClick: (e: React.MouseEvent) => void;
 }
 
-function TabItem({ tab, isActive, onClick, onClose, onMiddleClick }: TabItemProps) {
+function TabItem({ tab, isActive, maxWidth, onClick, onClose, onMiddleClick }: TabItemProps) {
   return (
     <div
       role="tab"
@@ -357,8 +578,9 @@ function TabItem({ tab, isActive, onClick, onClose, onMiddleClick }: TabItemProp
       onClick={onClick}
       onAuxClick={onMiddleClick}
       title={tab.filePath ?? tab.title}
+      style={{ maxWidth }}
       className={cn(
-        "group relative flex h-full min-w-[80px] max-w-[200px] cursor-pointer items-center gap-1.5 border-r border-border px-3 text-sm transition-colors select-none",
+        "group relative flex h-full min-w-[72px] shrink-0 cursor-pointer items-center gap-1.5 border-r border-border px-3 text-sm transition-colors select-none",
         isActive
           ? "bg-background text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-primary"
           : "text-muted-foreground hover:bg-background/60 hover:text-foreground"

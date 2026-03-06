@@ -12,11 +12,11 @@
  *     registration, no race conditions.
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Settings2, Check, Plus, X, ListOrdered } from "lucide-react";
+import { Settings2, Check, Plus, X, ListOrdered, ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import { useAppStore } from "@/store/appStore";
 import { cn } from "@/lib/utils";
 import {
@@ -81,6 +81,19 @@ interface QueueItem {
   text: string;
 }
 
+interface SessionGroup {
+  key: string;
+  projectName: string;
+  sessions: TermSession[];
+}
+
+// Session tab layout constants
+const SESS_GROUP_HEADER_PX = 80;
+const SESS_MIN_PX = 60;
+const SESS_MAX_PX = 120;
+const SESS_TOOLS_BASE_PX = 96; // + button + queue + settings
+const SESS_OVERFLOW_BTN_PX = 36;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function genId(): string {
@@ -119,6 +132,14 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   const termDivsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const busyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const busySessionsRef = useRef<Set<string>>(new Set());
+
+  // Session grouping
+  const [termGroupOrder, setTermGroupOrder] = useState<string[]>([]);
+  const [expandedTermGroups, setExpandedTermGroups] = useState<Set<string>>(new Set(["__none__"]));
+  const [sessTabWidth, setSessTabWidth] = useState(1200);
+  const [sessOverflowOpen, setSessOverflowOpen] = useState(false);
+  const sessTabRef = useRef<HTMLDivElement>(null);
+  const sessOverflowRef = useRef<HTMLDivElement>(null);
 
   // Inline rename
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -493,6 +514,38 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     }
   }, [renamingId]);
 
+  // Auto-expand active session's group + update MRU order
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const session = sessionsRef.current.find((s) => s.id === activeSessionId);
+    const key = session?.projectPath ?? "__none__";
+    setExpandedTermGroups((prev) => {
+      if (prev.has(key)) return prev;
+      return new Set([...prev, key]);
+    });
+    setTermGroupOrder((prev) => [key, ...prev.filter((k) => k !== key)]);
+  }, [activeSessionId]);
+
+  // ResizeObserver for session tab bar width
+  useEffect(() => {
+    const el = sessTabRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSessTabWidth(el.offsetWidth));
+    ro.observe(el);
+    setSessTabWidth(el.offsetWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  // Close session overflow dropdown on outside click
+  useEffect(() => {
+    if (!sessOverflowOpen) return;
+    function onDown(e: MouseEvent) {
+      if (!sessOverflowRef.current?.contains(e.target as Node)) setSessOverflowOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [sessOverflowOpen]);
+
   // Focus queue panel or input when it opens
   useEffect(() => {
     if (!queueOpen || !activeSessionId) return;
@@ -628,6 +681,58 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     setQueueInput("");
   }
 
+  // ── Session group layout ──────────────────────────────────────────────────
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sessionGroups = useMemo<SessionGroup[]>(() => {
+    const groupMap = new Map<string, TermSession[]>();
+    for (const session of sessions) {
+      const key = session.projectPath ?? "__none__";
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key)!.push(session);
+    }
+    const keys = [...groupMap.keys()];
+    keys.sort((a, b) => {
+      if (a === "__none__") return 1;
+      if (b === "__none__") return -1;
+      const ai = termGroupOrder.indexOf(a);
+      const bi = termGroupOrder.indexOf(b);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+    return keys.map((key) => ({
+      key,
+      projectName: key === "__none__" ? "General" : (key.split("/").pop() ?? key),
+      sessions: groupMap.get(key)!,
+    }));
+  }, [sessions, termGroupOrder]);
+
+  const showTermGroupHeaders = sessionGroups.length > 1;
+
+  // Shrink-to-fit + overflow for session tabs
+  const sessFixedPx = showTermGroupHeaders ? sessionGroups.length * SESS_GROUP_HEADER_PX : 0;
+  const allExpandedSessions = sessionGroups.flatMap((g) =>
+    expandedTermGroups.has(g.key) ? g.sessions : []
+  );
+  const totalSessCount = allExpandedSessions.length;
+
+  // Two-pass: check overflow without button first
+  const sessAvail1 = Math.max(0, sessTabWidth - SESS_TOOLS_BASE_PX - sessFixedPx);
+  const sessFit1 = Math.floor(sessAvail1 / SESS_MIN_PX);
+  const hasSessOverflow = totalSessCount > sessFit1;
+
+  const sessToolsPx = SESS_TOOLS_BASE_PX + (hasSessOverflow ? SESS_OVERFLOW_BTN_PX : 0);
+  const sessAvail = Math.max(0, sessTabWidth - sessToolsPx - sessFixedPx);
+  const sessFitCount = Math.floor(sessAvail / SESS_MIN_PX);
+  const sessMaxWidth = totalSessCount > 0
+    ? Math.min(SESS_MAX_PX, Math.max(SESS_MIN_PX, sessAvail / totalSessCount))
+    : SESS_MAX_PX;
+
+  const overflowSessions = allExpandedSessions.slice(sessFitCount);
+  const overflowSessIds = new Set(overflowSessions.map((s) => s.id));
+
   // ── Render ───────────────────────────────────────────────────────────────
 
   const termBg = resolvedTheme === "ink" ? "#1C1C1E" : "#FAFAF8";
@@ -644,84 +749,164 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     >
       {/* ── Session tab bar ───────────────────────────────────────────── */}
       <div
-        className="flex shrink-0 items-stretch border-b border-border"
+        className="flex shrink-0 items-stretch border-b border-border overflow-hidden"
         style={{ height: 32, background: "var(--muted)" }}
       >
-        {/* Scrollable session tabs */}
-        <div className="flex flex-1 items-stretch overflow-x-auto">
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={cn(
-                "flex items-center gap-1.5 shrink-0 px-2 border-r border-border cursor-pointer select-none transition-colors",
-                session.id === activeSessionId
-                  ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-              )}
-              onClick={() => handleSessionClick(session)}
-            >
-              {/* Busy pulse dot */}
-              {session.busy && (
-                <span
-                  className="shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
-                  style={{ background: "var(--primary)" }}
-                />
-              )}
+        {/* Groups + session tabs */}
+        <div ref={sessTabRef} className="flex flex-1 items-stretch overflow-hidden min-w-0">
+          {sessionGroups.map((group) => {
+            const isExpanded = expandedTermGroups.has(group.key);
+            const groupVisibleSessions = isExpanded
+              ? group.sessions.filter((s) => !overflowSessIds.has(s.id))
+              : [];
 
-              {/* Session name — inline rename on double-click */}
-              {renamingId === session.id ? (
-                <input
-                  ref={renameInputRef}
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") commitRename();
-                    if (e.key === "Escape") setRenamingId(null);
-                    e.stopPropagation();
-                  }}
-                  onBlur={commitRename}
-                  onClick={(e) => e.stopPropagation()}
-                  className="font-mono text-xs bg-transparent border-none outline-none w-20 text-foreground"
-                />
-              ) : (
-                <span
-                  className="font-mono text-xs"
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    startRename(session);
-                  }}
-                >
-                  {session.name}
-                </span>
-              )}
+            return (
+              <div key={group.key} className="flex items-stretch shrink-0">
+                {/* Group header — only when multiple groups */}
+                {showTermGroupHeaders && (
+                  <button
+                    onClick={() =>
+                      setExpandedTermGroups((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(group.key)) next.delete(group.key);
+                        else next.add(group.key);
+                        return next;
+                      })
+                    }
+                    title={group.key === "__none__" ? "General" : group.key}
+                    style={{ maxWidth: SESS_GROUP_HEADER_PX }}
+                    className="flex items-center gap-1 px-2 shrink-0 select-none transition-colors border-r-2 border-border hover:bg-muted-foreground/10 text-[11px] font-semibold"
+                  >
+                    {isExpanded
+                      ? <ChevronDown size={10} className="shrink-0 text-muted-foreground" />
+                      : <ChevronRight size={10} className="shrink-0 text-muted-foreground" />
+                    }
+                    <span className="truncate text-foreground/70">{group.projectName}</span>
+                  </button>
+                )}
 
-              {/* Project label (small, dimmed) */}
-              {session.projectPath && (
-                <span className="font-mono text-[10px] text-muted-foreground/60 hidden sm:inline">
-                  {session.projectPath.split("/").pop()}
-                </span>
-              )}
+                {/* Session tabs */}
+                {groupVisibleSessions.map((session) => (
+                  <div
+                    key={session.id}
+                    style={{ maxWidth: Math.floor(sessMaxWidth) }}
+                    className={cn(
+                      "flex items-center gap-1.5 shrink-0 min-w-[60px] px-2 border-r border-border cursor-pointer select-none transition-colors",
+                      session.id === activeSessionId
+                        ? "bg-background text-foreground"
+                        : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                    )}
+                    onClick={() => handleSessionClick(session)}
+                  >
+                    {/* Busy pulse dot */}
+                    {session.busy && (
+                      <span
+                        className="shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
+                        style={{ background: "var(--primary)" }}
+                      />
+                    )}
 
-              {/* Close button — only shown when multiple sessions exist */}
-              {sessions.length > 1 && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeSession(session.id);
-                  }}
-                  className="flex items-center justify-center rounded hover:bg-muted/80 p-0.5 ml-0.5 text-muted-foreground hover:text-foreground"
-                  title="세션 닫기"
-                >
-                  <X size={10} />
-                </button>
+                    {/* Session name — inline rename on double-click */}
+                    {renamingId === session.id ? (
+                      <input
+                        ref={renameInputRef}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename();
+                          if (e.key === "Escape") setRenamingId(null);
+                          e.stopPropagation();
+                        }}
+                        onBlur={commitRename}
+                        onClick={(e) => e.stopPropagation()}
+                        className="font-mono text-xs bg-transparent border-none outline-none w-20 text-foreground"
+                      />
+                    ) : (
+                      <span
+                        className="font-mono text-xs truncate flex-1"
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          startRename(session);
+                        }}
+                      >
+                        {session.name}
+                      </span>
+                    )}
+
+                    {/* Close button — only shown when multiple sessions exist */}
+                    {sessions.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeSession(session.id);
+                        }}
+                        className="flex items-center justify-center rounded hover:bg-muted/80 p-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="세션 닫기"
+                      >
+                        <X size={10} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Tools: overflow + add session */}
+        <div className="shrink-0 flex items-center">
+          {/* Overflow dropdown */}
+          {overflowSessions.length > 0 && (
+            <div className="relative" ref={sessOverflowRef}>
+              <button
+                onClick={() => setSessOverflowOpen((o) => !o)}
+                title={`${overflowSessions.length}개 세션 더 보기`}
+                className={cn(
+                  "flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] font-mono font-medium transition-colors",
+                  sessOverflowOpen
+                    ? "bg-background/80 text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+                )}
+              >
+                <MoreHorizontal size={12} />
+                <span>{overflowSessions.length}</span>
+              </button>
+              {sessOverflowOpen && (
+                <div className="absolute right-0 top-full z-50 mt-0.5 w-44 rounded-md border border-border bg-popover shadow-lg overflow-hidden">
+                  {overflowSessions.map((session) => (
+                    <button
+                      key={session.id}
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors hover:bg-accent",
+                        session.id === activeSessionId && "bg-accent/50"
+                      )}
+                      onClick={() => {
+                        handleSessionClick(session);
+                        setSessOverflowOpen(false);
+                        const key = session.projectPath ?? "__none__";
+                        setExpandedTermGroups((prev) => new Set([...prev, key]));
+                      }}
+                    >
+                      {session.busy && (
+                        <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: "var(--primary)" }} />
+                      )}
+                      <span className="font-mono truncate flex-1">{session.name}</span>
+                      {showTermGroupHeaders && session.projectPath && (
+                        <span className="text-[10px] text-muted-foreground shrink-0">
+                          {session.projectPath.split("/").pop()}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
-          ))}
+          )}
 
           {/* Add new session */}
           <button
             onClick={() => addSession(projectPathRef.current)}
-            className="flex items-center justify-center px-2.5 text-muted-foreground hover:text-foreground hover:bg-background/60 transition-colors"
+            className="flex items-center justify-center px-2 text-muted-foreground hover:text-foreground hover:bg-background/60 transition-colors h-full"
             title="새 터미널 세션"
           >
             <Plus size={12} />

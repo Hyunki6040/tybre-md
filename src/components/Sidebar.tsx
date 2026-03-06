@@ -20,18 +20,45 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
+// ── Helpers ───────────────────────────────────────────────────
+
+function findEntry(root: FileEntry, path: string): FileEntry | null {
+  if (root.path === path) return root;
+  for (const child of root.children ?? []) {
+    const found = findEntry(child, path);
+    if (found) return found;
+  }
+  return null;
+}
+
+function collectChildNames(root: FileEntry, dir: string): Set<string> {
+  const found = findEntry(root, dir);
+  if (!found?.children) return new Set();
+  return new Set(found.children.map((c) => c.name));
+}
+
 // ─────────────────────────────────────────────────────────────
 // Sidebar root
 // ─────────────────────────────────────────────────────────────
 export function Sidebar() {
-  const { sidebarVisible, fileTree, setFileTree, addTab, recentDirs, addRecentDir } =
-    useAppStore();
+  const {
+    sidebarVisible, fileTree, setFileTree, addTab,
+    recentDirs, addRecentDir, newFileRequestedAt,
+  } = useAppStore();
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [claudeDirs, setClaudeDirs] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dropupFocusIdx, setDropupFocusIdx] = useState(-1);
+
+  // Rename / new-file state
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [isNewFile, setIsNewFile] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
   const menuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -39,11 +66,8 @@ export function Sidebar() {
   useEffect(() => {
     async function loadProjects() {
       const { invoke } = await import("@tauri-apps/api/core");
-      // Phase 1: load cached projects immediately
       const cached = await invoke<string[]>("load_cached_projects").catch(() => []);
       if (cached.length > 0) setClaudeDirs(cached);
-
-      // Phase 2: fresh scan in background
       setScanning(true);
       const fresh = await invoke<string[]>("scan_claude_projects").catch(() => []);
       setClaudeDirs(fresh);
@@ -89,6 +113,13 @@ export function Sidebar() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [folderMenuOpen]);
 
+  // React to Ctrl+N from App.tsx via counter increment
+  useEffect(() => {
+    if (newFileRequestedAt === 0 || !fileTree) return;
+    handleNewFile();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newFileRequestedAt]);
+
   async function openDir(path: string) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -113,6 +144,111 @@ export function Sidebar() {
     setFolderMenuOpen(false);
   }
 
+  async function handleNewFile() {
+    if (!fileTree) return;
+
+    // 1. Determine target directory
+    let targetDir = fileTree.path;
+    if (selectedPath) {
+      const entry = findEntry(fileTree, selectedPath);
+      if (entry) {
+        targetDir = entry.is_dir
+          ? entry.path
+          : entry.path.split("/").slice(0, -1).join("/");
+      }
+    }
+
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    // 2. Find a non-conflicting filename
+    const freshTree = await invoke<FileEntry>("open_folder", { path: fileTree.path }).catch(() => fileTree);
+    const existingNames = collectChildNames(freshTree, targetDir);
+    let candidate = "Untitled.md";
+    let n = 2;
+    while (existingNames.has(candidate)) {
+      candidate = `Untitled ${n}.md`;
+      n++;
+    }
+
+    // 3. Create file
+    const newPath = `${targetDir}/${candidate}`;
+    await invoke("create_file", { path: newPath });
+
+    // 4. Add tab + refresh tree
+    const id = `tab-${Date.now()}`;
+    addTab({ id, filePath: newPath, projectPath: fileTree.path, title: candidate, content: "", isDirty: false });
+    const tree2 = await invoke<FileEntry>("open_folder", { path: fileTree.path });
+    setFileTree(tree2);
+
+    // 5. Expand parent dirs
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      next.add(targetDir);
+      next.add(fileTree.path);
+      return next;
+    });
+
+    // 6. Start inline rename
+    setIsNewFile(true);
+    setRenamingPath(newPath);
+    setRenameValue(candidate.replace(/\.md$/, ""));
+    setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 60);
+  }
+
+  async function commitRename(oldPath: string) {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { await cancelRename(oldPath); return; }
+
+    const dir = oldPath.split("/").slice(0, -1).join("/");
+    const newName = isNewFile
+      ? (trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`)
+      : trimmed;
+    const newPath = `${dir}/${newName}`;
+
+    if (newPath !== oldPath) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("rename_file", { oldPath, newPath });
+        useAppStore.setState((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.filePath === oldPath ? { ...t, filePath: newPath, title: newName, isDirty: false } : t
+          ),
+        }));
+        const tree = await invoke<FileEntry>("open_folder", { path: fileTree!.path });
+        setFileTree(tree);
+      } catch { /* conflict or error — ignore */ }
+    }
+
+    setRenamingPath(null);
+    setIsNewFile(false);
+  }
+
+  async function cancelRename(oldPath: string) {
+    if (isNewFile) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("delete_file", { path: oldPath });
+        const tab = useAppStore.getState().tabs.find((t) => t.filePath === oldPath);
+        if (tab) useAppStore.getState().closeTab(tab.id);
+        const tree = await invoke<FileEntry>("open_folder", { path: fileTree!.path });
+        setFileTree(tree);
+      } catch { /* ignore */ }
+    }
+    setRenamingPath(null);
+    setIsNewFile(false);
+  }
+
+  function toggleDir(path: string) {
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      next.has(path) ? next.delete(path) : next.add(path);
+      return next;
+    });
+  }
+
   // ── Filter logic (declared early so handleDropupKey can reference) ──
   const _query = searchQuery.toLowerCase();
   const _recentSet = new Set(recentDirs);
@@ -129,7 +265,6 @@ export function Sidebar() {
     if (e.key === "Escape") { setFolderMenuOpen(false); return; }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      // allDirItems.length index = Browse button
       setDropupFocusIdx((i) => Math.min(i + 1, _allDirItems.length));
       return;
     }
@@ -153,43 +288,7 @@ export function Sidebar() {
     }
   }
 
-  async function handleNewFile() {
-    if (!fileTree) return;
-    try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({
-        defaultPath: fileTree.path,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
-      });
-      if (typeof path === "string") {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("create_file", { path });
-        const name = path.split("/").pop() ?? "Untitled.md";
-        const id = `tab-${Date.now()}`;
-        addTab({ id, filePath: path, title: name, content: "", isDirty: false });
-        const tree = await invoke<FileEntry>("open_folder", { path: fileTree.path });
-        setFileTree(tree);
-      }
-    } catch {
-      addTab({
-        id: `tab-${Date.now()}`,
-        filePath: null,
-        title: "Untitled.md",
-        content: "",
-        isDirty: false,
-      });
-    }
-  }
-
-  function toggleDir(path: string) {
-    setExpandedDirs((prev) => {
-      const next = new Set(prev);
-      next.has(path) ? next.delete(path) : next.add(path);
-      return next;
-    });
-  }
-
-  // ── Filter logic aliases (use _-prefixed vars computed above) ──
+  // ── Filter logic aliases ──
   const query = _query;
   const filteredRecent = _filteredRecent;
   const filteredExtra = _filteredExtra;
@@ -238,6 +337,23 @@ export function Sidebar() {
               onToggleDir={toggleDir}
               depth={0}
               isRoot
+              renamingPath={renamingPath}
+              renameValue={renameValue}
+              renameInputRef={renameInputRef}
+              selectedPath={selectedPath}
+              onSelect={setSelectedPath}
+              onStartRename={(path, name) => {
+                setIsNewFile(false);
+                setRenamingPath(path);
+                setRenameValue(name.replace(/\.[^.]+$/, ""));
+                setTimeout(() => {
+                  renameInputRef.current?.focus();
+                  renameInputRef.current?.select();
+                }, 50);
+              }}
+              onRenameChange={setRenameValue}
+              onCommitRename={commitRename}
+              onCancelRename={cancelRename}
             />
           </div>
         ) : (
@@ -447,6 +563,15 @@ interface FileTreeNodeProps {
   onToggleDir: (path: string) => void;
   depth: number;
   isRoot?: boolean;
+  renamingPath?: string | null;
+  renameValue?: string;
+  renameInputRef?: React.RefObject<HTMLInputElement | null>;
+  selectedPath?: string | null;
+  onSelect?: (path: string) => void;
+  onStartRename?: (path: string, name: string) => void;
+  onRenameChange?: (v: string) => void;
+  onCommitRename?: (path: string) => void;
+  onCancelRename?: (path: string) => void;
 }
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
@@ -456,8 +581,12 @@ function fileExt(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
 }
 
-function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileTreeNodeProps) {
-  const { addTab, setActiveTab, tabs } = useAppStore();
+function FileTreeNode({
+  entry, expandedDirs, onToggleDir, depth, isRoot,
+  renamingPath, renameValue, renameInputRef,
+  selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
+}: FileTreeNodeProps) {
+  const { addTab, setActiveTab, tabs, fileTree } = useAppStore();
   const isExpanded = expandedDirs.has(entry.path);
 
   const ext = fileExt(entry.name);
@@ -490,11 +619,10 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
       const { invoke } = await import("@tauri-apps/api/core");
       const id = `tab-${Date.now()}`;
       if (isImage || isPdf) {
-        // Binary — don't read content, viewer uses convertFileSrc on the path
-        addTab({ id, filePath: entry.path, title: entry.name, content: "", isDirty: false });
+        addTab({ id, filePath: entry.path, projectPath: fileTree?.path ?? null, title: entry.name, content: "", isDirty: false });
       } else {
         const content = await invoke<string>("read_file", { path: entry.path });
-        addTab({ id, filePath: entry.path, title: entry.name, content, isDirty: false });
+        addTab({ id, filePath: entry.path, projectPath: fileTree?.path ?? null, title: entry.name, content, isDirty: false });
       }
     } catch (err) {
       console.error("Failed to open file:", err);
@@ -506,6 +634,13 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
     : isImage ? FileImage
     : isPdf ? File
     : FileText;
+
+  // Props forwarded to child nodes
+  const childProps = {
+    expandedDirs, onToggleDir,
+    renamingPath, renameValue, renameInputRef,
+    selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
+  };
 
   // ── Root directory header ──
   if (isRoot && entry.is_dir) {
@@ -538,9 +673,8 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
                 <FileTreeNode
                   key={child.path}
                   entry={child}
-                  expandedDirs={expandedDirs}
-                  onToggleDir={onToggleDir}
                   depth={depth + 1}
+                  {...childProps}
                 />
               ))}
             </div>
@@ -551,6 +685,8 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
   }
 
   // ── Regular node ──
+  const isRenaming = renamingPath === entry.path;
+
   return (
     <div>
       <div
@@ -561,12 +697,25 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
           !isActiveFile && entry.is_dir && "text-foreground",
           !isActiveFile && isOpenable && "text-foreground",
           !isOpenable && !entry.is_dir && "text-muted-foreground",
+          selectedPath === entry.path && !isActiveFile && "bg-accent/20",
         )}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
-        onClick={handleFileClick}
+        onClick={() => {
+          onSelect?.(entry.path);
+          handleFileClick();
+        }}
         role={entry.is_dir ? "button" : "treeitem"}
         tabIndex={0}
-        onKeyDown={(e) => e.key === "Enter" && handleFileClick()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (entry.is_dir) {
+              onToggleDir(entry.path);
+            } else {
+              onStartRename?.(entry.path, entry.name);
+            }
+          }
+        }}
       >
         {entry.is_dir ? (
           <ChevronRight
@@ -594,9 +743,25 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
                       : "text-muted-foreground/60"
           )}
         />
-        <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px]">
-          {entry.name}
-        </span>
+        {isRenaming ? (
+          <input
+            ref={renameInputRef}
+            value={renameValue ?? ""}
+            onChange={(e) => onRenameChange?.(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter")  { e.preventDefault(); e.stopPropagation(); onCommitRename?.(entry.path); }
+              if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancelRename?.(entry.path); }
+            }}
+            onBlur={() => onCommitRename?.(entry.path)}
+            onClick={(e) => e.stopPropagation()}
+            className="flex-1 min-w-0 bg-transparent outline-none text-[13px] border-b border-primary"
+            style={{ color: "var(--foreground)", caretColor: "var(--primary)" }}
+          />
+        ) : (
+          <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px]">
+            {entry.name}
+          </span>
+        )}
       </div>
 
       {/* Animated children */}
@@ -613,9 +778,8 @@ function FileTreeNode({ entry, expandedDirs, onToggleDir, depth, isRoot }: FileT
               <FileTreeNode
                 key={child.path}
                 entry={child}
-                expandedDirs={expandedDirs}
-                onToggleDir={onToggleDir}
                 depth={depth + 1}
+                {...childProps}
               />
             ))}
           </div>

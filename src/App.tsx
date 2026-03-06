@@ -11,7 +11,7 @@ interface WindowSession {
 
 /** Load file content for each path, skip missing files, bulk-replace store tabs. */
 async function restoreTabsFromSession(
-  session: Pick<WindowSession, "open_files" | "active_file">,
+  session: Pick<WindowSession, "open_files" | "active_file" | "project_path">,
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
 ) {
   const results = await Promise.all(
@@ -21,6 +21,7 @@ async function restoreTabsFromSession(
         const tab: Tab = {
           id: `tab-restore-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           filePath,
+          projectPath: session.project_path ?? null,
           title: filePath.split("/").pop() ?? filePath,
           content,
           isDirty: false,
@@ -430,8 +431,9 @@ export default function App() {
         if (fileTree) {
           useAppStore.getState().requestNewFile();
         } else {
+          const { fileTree: ft } = useAppStore.getState();
           useAppStore.getState().addTab({
-            id: `tab-${Date.now()}`, filePath: null, title: "Untitled", content: "", isDirty: false,
+            id: `tab-${Date.now()}`, filePath: null, projectPath: ft?.path ?? null, title: "Untitled", content: "", isDirty: false,
           });
         }
         return;
@@ -445,7 +447,7 @@ export default function App() {
           setQuickOpenVisible(true);
         } else {
           useAppStore.getState().addTab({
-            id: `tab-${Date.now()}`, filePath: null, title: "Untitled", content: "", isDirty: false,
+            id: `tab-${Date.now()}`, filePath: null, projectPath: null, title: "Untitled", content: "", isDirty: false,
           });
         }
         return;
@@ -684,6 +686,7 @@ export default function App() {
                     const id = `tab-${Date.now()}`;
                     useAppStore.getState().addTab({
                       id, filePath: lastFile,
+                      projectPath: path,
                       title: lastFile.split("/").pop() ?? "file",
                       content, isDirty: false,
                     });
