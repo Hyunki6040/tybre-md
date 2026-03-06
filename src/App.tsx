@@ -532,7 +532,7 @@ export default function App() {
           </div>
 
           {/* Terminal — xterm.js + portable-pty */}
-          <TerminalView visible={view === "terminal"} />
+          <TerminalView visible={view === "terminal"} projectPath={fileTree?.path ?? null} />
         </div>
 
         {/* Global overlays */}
