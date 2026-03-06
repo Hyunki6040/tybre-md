@@ -20,7 +20,6 @@ pub fn read_file(path: String) -> Result<String, String> {
 /// Write content to a file (creates if not exists)
 #[command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
-    // Ensure parent directory exists
     if let Some(parent) = Path::new(&path).parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -67,7 +66,6 @@ pub fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        // Skip hidden files
         if name.starts_with('.') {
             continue;
         }
@@ -81,13 +79,283 @@ pub fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
         });
     }
 
-    // Sort: directories first, then alphabetically
-    result.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name))
-    });
-
+    result.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
     Ok(result)
 }
+
+/// Native folder picker dialog (rfd — no Tauri plugin needed)
+#[command]
+pub fn pick_folder() -> Result<Option<String>, String> {
+    let result = rfd::FileDialog::new().pick_folder();
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
+}
+
+/// Native save-file dialog for "Save As"
+#[command]
+pub fn pick_save_path(default_name: String) -> Result<Option<String>, String> {
+    let result = rfd::FileDialog::new()
+        .set_file_name(&default_name)
+        .add_filter("Markdown", &["md"])
+        .save_file();
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
+}
+
+// ── Project indexing & caching ────────────────────────────────────────────────
+
+/// Returns ~/.tybre, creating it if needed
+fn tybre_cache_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::Path::new(&home).join(".tybre");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+fn save_projects_cache(projects: &[String]) {
+    if let Some(dir) = tybre_cache_dir() {
+        if let Ok(json) = serde_json::to_string_pretty(projects) {
+            let _ = fs::write(dir.join("projects.json"), json);
+        }
+    }
+}
+
+/// Return the on-disk cached project list (instant — no scanning)
+#[command]
+pub fn load_cached_projects() -> Vec<String> {
+    let Some(dir) = tybre_cache_dir() else { return Vec::new() };
+    let Ok(contents) = fs::read_to_string(dir.join("projects.json")) else { return Vec::new() };
+    serde_json::from_str::<Vec<String>>(&contents).unwrap_or_default()
+}
+
+/// Recursively scan `root` up to `depth` levels for directories containing `.claude`
+fn scan_dir_for_claude(root: &Path, depth: u8, found: &mut Vec<String>) {
+    if depth == 0 { return; }
+    let Ok(entries) = fs::read_dir(root) else { return };
+    let mut count = 0u32;
+    for entry in entries.flatten() {
+        if count >= 400 { break; } // guard against huge directories
+        count += 1;
+        let p = entry.path();
+        if !p.is_dir() { continue; }
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip hidden dirs and large build/dep directories
+        if name.starts_with('.') || matches!(
+            name.as_str(),
+            "node_modules" | "target" | "vendor" | ".git" | "dist" | "build" | "__pycache__"
+        ) {
+            continue;
+        }
+        if p.join(".claude").exists() {
+            found.push(p.to_string_lossy().to_string());
+        }
+        if depth > 1 {
+            scan_dir_for_claude(&p, depth - 1, found);
+        }
+    }
+}
+
+/// Full scan: walk common user directories, save cache, return results.
+/// Frontend should call `load_cached_projects` first for instant results, then call
+/// this in the background to refresh.
+#[command]
+pub fn scan_claude_projects() -> Result<Vec<String>, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Common dev directory names to scan as explicit roots (depth 2 each).
+    // Also scan home itself with depth 3 to catch ~/X/Y/project patterns.
+    let extra_names = [
+        "Develop", "Developer", "Development",
+        "dev", "src", "code", "coding",
+        "Projects", "projects",
+        "workspace", "Workspace",
+        "repos", "github", "gitlab",
+        "work", "Work",
+        "IdeaProjects", "AndroidStudioProjects",
+    ];
+
+    let mut found = Vec::new();
+
+    // Scan home 3 levels deep: ~/A/B/project is reachable
+    let home_path = Path::new(&home);
+    if home_path.exists() {
+        if home_path.join(".claude").exists() {
+            found.push(home.clone());
+        }
+        scan_dir_for_claude(home_path, 3, &mut found);
+    }
+
+    // Extra named roots — scan 2 levels each so ~/Develop/year/project is found
+    // even if they weren't fully covered by the home pass (dedup handles overlaps)
+    for name in &extra_names {
+        let root_str = format!("{}/{}", home, name);
+        let root = Path::new(&root_str);
+        if !root.exists() { continue; }
+        if root.join(".claude").exists() {
+            found.push(root_str.clone());
+        }
+        scan_dir_for_claude(root, 2, &mut found);
+    }
+
+    found.sort();
+    found.dedup();
+
+    // Sort by directory modification time — newest first (= most recently worked on)
+    found.sort_by(|a, b| {
+        let mtime = |p: &str| {
+            fs::metadata(p)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH)
+        };
+        mtime(b).cmp(&mtime(a))
+    });
+
+    save_projects_cache(&found);
+    Ok(found)
+}
+
+// ── Full-text search ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchMatch {
+    pub path: String,
+    pub relative_path: String,
+    pub line_num: usize,
+    pub line_text: String,
+}
+
+/// Search for a text query across all .md files under root (case-insensitive, max 200 results)
+#[command]
+pub fn search_files(root: String, query: String) -> Result<Vec<SearchMatch>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut results = Vec::new();
+    let q = query.to_lowercase();
+    search_dir_for_text(&root, &root, &q, &mut results);
+    Ok(results)
+}
+
+fn search_dir_for_text(root: &str, dir: &str, query: &str, results: &mut Vec<SearchMatch>) {
+    if results.len() >= 200 { return; }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if results.len() >= 200 { return; }
+        let p = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        if matches!(name.as_str(), "node_modules" | "target" | "dist" | "build" | ".git") {
+            continue;
+        }
+        if p.is_dir() {
+            search_dir_for_text(root, &p.to_string_lossy(), query, results);
+        } else if name.ends_with(".md") || name.ends_with(".txt") || name.ends_with(".markdown") {
+            let Ok(content) = fs::read_to_string(&p) else { continue };
+            let path_str = p.to_string_lossy().to_string();
+            let rel = path_str
+                .strip_prefix(root)
+                .unwrap_or(&path_str)
+                .trim_start_matches('/')
+                .to_string();
+            for (i, line) in content.lines().enumerate() {
+                if results.len() >= 200 { return; }
+                if line.to_lowercase().contains(query) {
+                    results.push(SearchMatch {
+                        path: path_str.clone(),
+                        relative_path: rel.clone(),
+                        line_num: i + 1,
+                        line_text: line.trim().to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+
+// ── Session persistence ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WindowSession {
+    pub is_main: bool,
+    pub project_path: Option<String>,
+    pub open_files: Vec<String>,
+    pub active_file: Option<String>,
+}
+
+fn session_file() -> Option<std::path::PathBuf> {
+    tybre_cache_dir().map(|d| d.join("session.json"))
+}
+
+fn read_sessions_raw() -> Vec<WindowSession> {
+    let Some(path) = session_file() else { return Vec::new() };
+    let Ok(contents) = fs::read_to_string(&path) else { return Vec::new() };
+    serde_json::from_str::<Vec<WindowSession>>(&contents).unwrap_or_default()
+}
+
+fn write_sessions_raw(sessions: &[WindowSession]) {
+    let Some(path) = session_file() else { return };
+    if let Ok(json) = serde_json::to_string_pretty(sessions) {
+        let _ = fs::write(path, json);
+    }
+}
+
+/// Load saved window sessions, skipping entries whose project folder no longer exists.
+#[command]
+pub fn load_session() -> Vec<WindowSession> {
+    read_sessions_raw()
+        .into_iter()
+        .filter(|s| {
+            s.project_path
+                .as_ref()
+                .map_or(true, |p| Path::new(p).exists())
+        })
+        .collect()
+}
+
+/// Upsert a window's session entry. Identified by `is_main` (for the main window)
+/// or by `project_path` (for project windows).
+#[command]
+pub fn update_window_session(
+    is_main: bool,
+    project_path: Option<String>,
+    open_files: Vec<String>,
+    active_file: Option<String>,
+) -> Result<(), String> {
+    let mut sessions = read_sessions_raw();
+    let entry = WindowSession {
+        is_main,
+        project_path: project_path.clone(),
+        open_files,
+        active_file,
+    };
+    let pos = if is_main {
+        sessions.iter().position(|s| s.is_main)
+    } else {
+        sessions
+            .iter()
+            .position(|s| !s.is_main && s.project_path == project_path)
+    };
+    match pos {
+        Some(idx) => sessions[idx] = entry,
+        None => sessions.push(entry),
+    }
+    write_sessions_raw(&sessions);
+    Ok(())
+}
+
+/// Remove a window's session entry (called when the window is explicitly closed by the user).
+#[command]
+pub fn remove_window_session(is_main: bool, project_path: Option<String>) -> Result<(), String> {
+    let mut sessions = read_sessions_raw();
+    if is_main {
+        sessions.retain(|s| !s.is_main);
+    } else {
+        sessions.retain(|s| s.is_main || s.project_path != project_path);
+    }
+    write_sessions_raw(&sessions);
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn build_file_tree(path: &str) -> Result<FileEntry, String> {
     let p = Path::new(path);
@@ -101,7 +369,6 @@ fn build_file_tree(path: &str) -> Result<FileEntry, String> {
         if let Ok(entries) = fs::read_dir(path) {
             for entry in entries.flatten() {
                 let entry_name = entry.file_name().to_string_lossy().to_string();
-                // Skip hidden files and common build directories
                 if entry_name.starts_with('.')
                     || entry_name == "node_modules"
                     || entry_name == "target"
@@ -114,23 +381,10 @@ fn build_file_tree(path: &str) -> Result<FileEntry, String> {
                 }
             }
         }
-        // Sort: directories first, then alphabetically
-        children.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name))
-        });
+        children.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
 
-        Ok(FileEntry {
-            name,
-            path: path.to_string(),
-            is_dir: true,
-            children: Some(children),
-        })
+        Ok(FileEntry { name, path: path.to_string(), is_dir: true, children: Some(children) })
     } else {
-        Ok(FileEntry {
-            name,
-            path: path.to_string(),
-            is_dir: false,
-            children: None,
-        })
+        Ok(FileEntry { name, path: path.to_string(), is_dir: false, children: None })
     }
 }

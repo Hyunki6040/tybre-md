@@ -1,5 +1,46 @@
 import { useEffect, useCallback, useRef } from "react";
-import { useAppStore } from "@/store/appStore";
+import { useAppStore, type Tab } from "@/store/appStore";
+
+// ── Session types (must match Rust WindowSession struct) ─────────────────────
+interface WindowSession {
+  is_main: boolean;
+  project_path: string | null;
+  open_files: string[];
+  active_file: string | null;
+}
+
+/** Load file content for each path, skip missing files, bulk-replace store tabs. */
+async function restoreTabsFromSession(
+  session: Pick<WindowSession, "open_files" | "active_file">,
+  invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
+) {
+  const results = await Promise.all(
+    session.open_files.map(async (filePath) => {
+      try {
+        const content = await invoke<string>("read_file", { path: filePath });
+        const tab: Tab = {
+          id: `tab-restore-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          filePath,
+          title: filePath.split("/").pop() ?? filePath,
+          content,
+          isDirty: false,
+        };
+        return tab;
+      } catch {
+        return null; // file deleted — skip
+      }
+    })
+  );
+
+  const tabs = results.filter((t): t is Tab => t !== null);
+  if (tabs.length === 0) return;
+
+  const activeTabId =
+    tabs.find((t) => t.filePath === session.active_file)?.id ??
+    tabs[tabs.length - 1].id;
+
+  useAppStore.setState({ tabs, activeTabId, closedTabs: [] });
+}
 import { TabBar } from "@/components/TabBar";
 import { Sidebar } from "@/components/Sidebar";
 import { QuickOpen } from "@/components/QuickOpen";
@@ -102,19 +143,165 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileTree?.path]);
 
-  // ── Open project from URL param (?project=<path>) ─────────────────────────
-  // Used when the app is launched in a new window via QuickOpen "open project"
+  // ── Session restore + project open ──────────────────────────────────────────
+  // Runs once on mount. Handles two cases:
+  //   • Main window (label "main"): reads all sessions, applies own, spawns child windows
+  //   • Project window (?project=<path>): opens project + restores its saved tabs
+  const sessionRestoredRef = useRef(false);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const projectPath = params.get("project");
-    if (!projectPath) return;
-    import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<import("@/store/appStore").FileEntry>("open_folder", { path: projectPath }))
-      .then((tree) => {
-        setFileTree(tree);
-        addRecentDir(projectPath);
+    if (sessionRestoredRef.current) return;
+    sessionRestoredRef.current = true;
+
+    async function restoreOrOpen() {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+
+      const windowLabel = getCurrentWindow().label;
+      const isMainWindow = windowLabel === "main";
+      const params = new URLSearchParams(window.location.search);
+      const projectPathParam = params.get("project");
+
+      // Load persisted sessions (no-op outside Tauri / first launch)
+      let sessions: WindowSession[] = [];
+      try {
+        sessions = await invoke<WindowSession[]>("load_session");
+      } catch { /* browser dev mode or first launch */ }
+
+      // Find this window's matching session
+      const mySession: WindowSession | undefined = isMainWindow
+        ? sessions.find((s) => s.is_main)
+        : sessions.find((s) => !s.is_main && s.project_path === projectPathParam);
+
+      // Project to open: prefer saved session path, fall back to URL param
+      const projectToOpen = mySession?.project_path ?? projectPathParam ?? null;
+
+      if (projectToOpen) {
+        try {
+          const tree = await invoke<import("@/store/appStore").FileEntry>(
+            "open_folder", { path: projectToOpen }
+          );
+          setFileTree(tree);
+          addRecentDir(projectToOpen);
+        } catch { /* project folder removed since last session */ }
+      }
+
+      // Restore open tabs for this window
+      if (mySession && mySession.open_files.length > 0) {
+        await restoreTabsFromSession(mySession, invoke as Parameters<typeof restoreTabsFromSession>[1]);
+      }
+
+      // ── Main window only: spawn child windows for saved project sessions ──
+      if (!isMainWindow) return;
+
+      const childSessions = sessions.filter(
+        (s) => !s.is_main && s.project_path && s.project_path !== projectToOpen
+      );
+      if (childSessions.length === 0) return;
+
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      for (const session of childSessions) {
+        const projectName = session.project_path!.split("/").pop() ?? "Project";
+        const label = `restore-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        new WebviewWindow(label, {
+          url: `/?project=${encodeURIComponent(session.project_path!)}`,
+          title: `${projectName} — Tybre.md`,
+          width: 1280,
+          height: 800,
+          minWidth: 800,
+          minHeight: 600,
+        });
+        // Small stagger to avoid resource contention
+        await new Promise<void>((r) => setTimeout(r, 120));
+      }
+    }
+
+    restoreOrOpen().catch(console.error);
+  }, []);
+
+  // ── Session save (debounced) ──────────────────────────────────────────────
+  // Subscribes to store; whenever project/tabs/activeTab change, persists session.
+  const windowLabelRef = useRef<string>("main");
+  const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Cache window label synchronously (getCurrentWindow is sync in Tauri v2)
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        windowLabelRef.current = getCurrentWindow().label;
       })
-      .catch(console.error);
+      .catch(() => { windowLabelRef.current = "main"; });
+
+    function schedSave() {
+      if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = setTimeout(async () => {
+        const { fileTree, tabs, activeTabId } = useAppStore.getState();
+        const isMain = windowLabelRef.current === "main";
+        const openFiles = tabs.filter((t) => t.filePath).map((t) => t.filePath as string);
+        const activeFile = tabs.find((t) => t.id === activeTabId)?.filePath ?? null;
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("update_window_session", {
+            isMain,
+            projectPath: fileTree?.path ?? null,
+            openFiles,
+            activeFile,
+          });
+        } catch { /* browser / not Tauri */ }
+      }, 1500);
+    }
+
+    // Only re-save when project, tabs, or active tab actually change
+    const unsub = useAppStore.subscribe((s, prev) => {
+      if (
+        s.fileTree !== prev.fileTree ||
+        s.tabs !== prev.tabs ||
+        s.activeTabId !== prev.activeTabId
+      ) {
+        schedSave();
+      }
+    });
+
+    return () => {
+      unsub();
+      if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+    };
+  }, []);
+
+  // ── Remove session when window is explicitly closed by the user ───────────
+  // onCloseRequested fires for individual close (X button).
+  // When Cmd+Q / Ctrl+Q is used the user expects full restore, so we DON'T
+  // delete sessions in that path. We detect that via a flag set on keydown.
+  useEffect(() => {
+    let isAppQuitting = false;
+    let unlistenClose: (() => void) | null = null;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "q" || e.key === "Q")) {
+        isAppQuitting = true;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      const win = getCurrentWindow();
+      unlistenClose = await win.onCloseRequested(async () => {
+        // If the user is quitting the whole app, preserve sessions so they
+        // can be restored on next launch.
+        if (isAppQuitting) return;
+        // Individual window close — remove its session entry.
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const isMain = windowLabelRef.current === "main";
+          const projectPath = useAppStore.getState().fileTree?.path ?? null;
+          await invoke("remove_window_session", { isMain, projectPath });
+        } catch { /* noop */ }
+      });
+    }).catch(() => {});
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      unlistenClose?.();
+    };
   }, []);
 
   // ── Theme resolution ──────────────────────────────────────────────────────
