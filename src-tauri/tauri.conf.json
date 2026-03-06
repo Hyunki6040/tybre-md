@@ -30,7 +30,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDREMzZEQzU0M0M5RkQ0NkQKUldSdDFKODhWTncyVFNITFB5VUt1Z284RzdjNUlWMkJOc3ZzQmJEQ2R3aEVaWFAzSjUzQnNhMjEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCRDNGNzA3NEU1QTJBNzUKUldSMUtscE9CL2ZUTyt6NWVKWGNWaktNM3pMNi9yQzVLSzd4M2xtNFFZb1QvU0ZvQk43ZU5VK2EK",
       "endpoints": [
         "https://github.com/Hyunki6040/tybre-md/releases/latest/download/latest.json"
       ]

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { Plus, X, PanelLeft, Keyboard, ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
+import { Plus, X, PanelLeft, Keyboard, ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react";
 import { useAppStore, type Tab } from "@/store/appStore";
 import { Button } from "@/components/ui/button";
 import {
@@ -230,6 +230,9 @@ function computeGroups(tabs: Tab[], groupOrder: string[]): TabGroup[] {
   }));
 }
 
+// Group color hues (blue, violet, emerald, amber, rose)
+const GROUP_HUES = [210, 262, 152, 38, 355];
+
 // Layout constants
 const GROUP_HEADER_PX = 88;
 const TAB_MIN_PX = 72;
@@ -242,7 +245,7 @@ export function TabBar() {
   const {
     tabs, activeTabId, closeTab, setActiveTab, addTab, toggleSidebar, fileTree,
     sidebarVisible, guideMode, toggleGuideMode, shortcutStats, recordMouseAction,
-    groupOrder,
+    groupOrder, projectLastTab, setProjectLastTab,
   } = useAppStore();
 
   const [guidePanelOpen, setGuidePanelOpen] = useState(false);
@@ -276,14 +279,14 @@ export function TabBar() {
     return () => ro.disconnect();
   }, []);
 
-  // Auto-expand the active tab's group when it changes
+  // Auto-expand only the active tab's group, collapse all others
   useEffect(() => {
     if (!activeTabId) return;
     const tab = tabs.find((t) => t.id === activeTabId);
     const key = tab?.projectPath ?? "__none__";
     setExpandedGroups((prev) => {
-      if (prev.has(key)) return prev;
-      return new Set([...prev, key]);
+      if (prev.size === 1 && prev.has(key)) return prev;
+      return new Set([key]);
     });
   }, [activeTabId, tabs]);
 
@@ -349,6 +352,11 @@ export function TabBar() {
     toggleSidebar();
   }
 
+  function handleTabClick(tab: Tab) {
+    if (tab.filePath) setProjectLastTab(tab.projectPath ?? "__none__", tab.filePath);
+    setActiveTab(tab.id);
+  }
+
   function handleCloseTab(e: React.MouseEvent, tabId: string) {
     e.stopPropagation();
     if (guideMode) recordMouseAction("⌘W", "탭 닫기");
@@ -360,12 +368,24 @@ export function TabBar() {
   }
 
   function toggleGroup(key: string) {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    const isExpanded = expandedGroups.has(key);
+    if (isExpanded) {
+      setExpandedGroups((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    } else {
+      // Activate last used tab in this group
+      const group = groups.find((g) => g.key === key);
+      const lastFilePath = projectLastTab[key];
+      const target =
+        (lastFilePath && group?.tabs.find((t) => t.filePath === lastFilePath)) ??
+        group?.tabs[group.tabs.length - 1];
+      if (target) setActiveTab(target.id);
+      // Collapse all others, expand only this group
+      setExpandedGroups(new Set([key]));
+    }
   }
 
   const skillLabels = ["단축키 입문자", "조금 활용 중", "절반은 활용!", "능숙한 편", "단축키 마스터"];
@@ -378,8 +398,9 @@ export function TabBar() {
       >
         {/* Groups + tabs area */}
         <div className="flex flex-1 items-stretch overflow-hidden min-w-0">
-          {groups.map((group) => {
+          {groups.map((group, groupIdx) => {
             const isExpanded = expandedGroups.has(group.key);
+            const hue = GROUP_HUES[groupIdx % GROUP_HUES.length];
             const groupVisibleTabs = isExpanded
               ? group.tabs.filter((t) => !overflowTabIds.has(t.id))
               : [];
@@ -391,17 +412,21 @@ export function TabBar() {
                   <button
                     onClick={() => toggleGroup(group.key)}
                     title={group.projectPath ?? "Untitled"}
-                    style={{ maxWidth: GROUP_HEADER_PX }}
+                    style={{
+                      maxWidth: GROUP_HEADER_PX,
+                      background: isExpanded
+                        ? `hsl(${hue} 60% 50% / 0.18)`
+                        : `hsl(${hue} 60% 50% / 0.07)`,
+                      borderRight: `2px solid hsl(${hue} 60% 50% / ${isExpanded ? "0.5" : "0.2"})`,
+                    }}
                     className={cn(
-                      "flex items-center gap-1 px-2 shrink-0 select-none transition-colors",
-                      "bg-muted text-[11px] font-semibold",
-                      "border-r-2 border-border hover:bg-muted-foreground/10",
-                      isExpanded ? "border-r-primary/40" : "border-r-border"
+                      "flex items-center gap-1 px-2 shrink-0 select-none transition-all",
+                      "text-[11px] font-semibold hover:brightness-110"
                     )}
                   >
                     {isExpanded
-                      ? <ChevronDown className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
-                      : <ChevronRight className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                      ? <ChevronRight className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                      : <ChevronLeft className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
                     }
                     <span className="truncate text-foreground/70">{group.projectName}</span>
                   </button>
@@ -414,7 +439,8 @@ export function TabBar() {
                     tab={tab}
                     isActive={tab.id === activeTabId}
                     maxWidth={Math.floor(tabMaxWidth)}
-                    onClick={() => setActiveTab(tab.id)}
+                    groupHue={showHeaders ? hue : undefined}
+                    onClick={() => handleTabClick(tab)}
                     onClose={(e) => handleCloseTab(e, tab.id)}
                     onMiddleClick={(e) => handleMiddleClick(e, tab.id)}
                   />
@@ -453,10 +479,8 @@ export function TabBar() {
                         tab.id === activeTabId && "bg-accent/50 text-foreground"
                       )}
                       onClick={() => {
-                        setActiveTab(tab.id);
+                        handleTabClick(tab);
                         setOverflowOpen(false);
-                        const key = tab.projectPath ?? "__none__";
-                        setExpandedGroups((prev) => new Set([...prev, key]));
                       }}
                     >
                       {tab.isDirty && (
@@ -568,12 +592,22 @@ interface TabItemProps {
   tab: Tab;
   isActive: boolean;
   maxWidth: number;
+  groupHue?: number;
   onClick: () => void;
   onClose: (e: React.MouseEvent) => void;
   onMiddleClick: (e: React.MouseEvent) => void;
 }
 
-function TabItem({ tab, isActive, maxWidth, onClick, onClose, onMiddleClick }: TabItemProps) {
+function TabItem({ tab, isActive, maxWidth, groupHue, onClick, onClose, onMiddleClick }: TabItemProps) {
+  const activeStyle = isActive && groupHue !== undefined
+    ? {
+        background: `hsl(${groupHue} 60% 50% / 0.13)`,
+        borderTop: `2px solid hsl(${groupHue} 60% 50% / 0.8)`,
+      }
+    : isActive
+    ? { borderTop: "2px solid hsl(var(--primary))" }
+    : {};
+
   return (
     <div
       role="tab"
@@ -581,12 +615,12 @@ function TabItem({ tab, isActive, maxWidth, onClick, onClose, onMiddleClick }: T
       onClick={onClick}
       onAuxClick={onMiddleClick}
       title={tab.filePath ?? tab.title}
-      style={{ maxWidth }}
+      style={{ maxWidth, ...activeStyle }}
       className={cn(
-        "group relative flex h-full min-w-[72px] shrink-0 cursor-pointer items-center gap-1.5 border-r border-border px-3 text-sm transition-colors select-none",
+        "group relative flex h-full min-w-[72px] shrink-0 cursor-pointer items-center gap-1.5 border-r border-border px-3 text-sm transition-all select-none",
         isActive
-          ? "bg-background text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-primary"
-          : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground/70 hover:bg-background/50 hover:text-foreground"
       )}
     >
       {tab.isDirty && (
@@ -597,7 +631,7 @@ function TabItem({ tab, isActive, maxWidth, onClick, onClose, onMiddleClick }: T
         variant="ghost" size="icon-sm"
         className={cn(
           "h-5 w-5 shrink-0 rounded p-0 text-muted-foreground opacity-0 transition-opacity hover:bg-border hover:text-foreground group-hover:opacity-100",
-          isActive && "opacity-100"
+          isActive && "opacity-60 hover:opacity-100"
         )}
         onClick={onClose}
         aria-label={`Close ${tab.title}`}

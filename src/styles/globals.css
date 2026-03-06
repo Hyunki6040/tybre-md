@@ -4,46 +4,33 @@
 
 /* ============================================================
    shadcn/ui CSS Variables — Paper (light) + Ink (dark)
-   Color values are HSL without the hsl() wrapper.
    ============================================================ */
 
 @layer base {
   :root {
-    /* ── Paper (light) theme ── */
-    --background: 60 20% 98%;        /* #FAFAF8 */
-    --foreground: 0 0% 17%;          /* #2C2C2C */
-
+    --background: 60 20% 98%;
+    --foreground: 0 0% 17%;
     --card: 60 20% 98%;
     --card-foreground: 0 0% 17%;
-
     --popover: 60 20% 98%;
     --popover-foreground: 0 0% 17%;
-
-    --primary: 210 43% 52%;          /* #4A7FBF */
+    --primary: 210 43% 52%;
     --primary-foreground: 0 0% 100%;
-
-    --secondary: 45 14% 93%;         /* #F0EFEB */
+    --secondary: 45 14% 93%;
     --secondary-foreground: 0 0% 17%;
-
-    --muted: 45 14% 93%;             /* #F0EFEB */
-    --muted-foreground: 90 1% 61%;   /* #9B9B97 */
-
+    --muted: 45 14% 93%;
+    --muted-foreground: 90 1% 61%;
     --accent: 45 14% 93%;
     --accent-foreground: 0 0% 17%;
-
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-
-    --border: 45 10% 86%;            /* #E0DED8 */
+    --border: 45 10% 86%;
     --input: 45 10% 86%;
-    --ring: 210 43% 52%;             /* #4A7FBF */
-
-    --warning: 35 62% 53%;           /* #D4943A */
+    --ring: 210 43% 52%;
+    --warning: 35 62% 53%;
     --warning-foreground: 0 0% 100%;
-
     --radius: 0.5rem;
 
-    /* ── Tybre custom properties (editor, sidebar, etc.) ── */
     --bg: #FAFAF8;
     --bg-surface: #F0EFEB;
     --bg-overlay: rgba(250, 250, 248, 0.95);
@@ -55,57 +42,42 @@
     --tybre-accent-dim: rgba(74, 127, 191, 0.12);
     --code-bg: #EDEDEB;
     --selection: rgba(74, 127, 191, 0.2);
-
-    --status-text: #767676;    /* 4.35:1 on --bg — WCAG AA at small size */
+    --status-text: #767676;
 
     --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Pretendard, sans-serif;
     --font-mono: "SF Mono", "Cascadia Mono", "Fira Code", "Consolas", monospace;
     --font-size-base: 16px;
     --line-height: 1.75;
-
     --editor-max-width: 800px;
-    --editor-padding-h: 32px;
-
+    --editor-padding-h: 40px;
     --transition-fast: 150ms ease-out;
     --transition-normal: 200ms ease-out;
-
     --sidebar-width: 240px;
   }
 
   .dark {
-    /* ── Ink (dark) theme ── */
-    --background: 240 3% 11%;        /* #1C1C1E */
-    --foreground: 0 0% 89%;          /* #E4E4E4 */
-
-    --card: 240 2% 18%;              /* #2C2C2E */
+    --background: 240 3% 11%;
+    --foreground: 0 0% 89%;
+    --card: 240 2% 18%;
     --card-foreground: 0 0% 89%;
-
     --popover: 240 3% 11%;
     --popover-foreground: 0 0% 89%;
-
-    --primary: 210 56% 63%;          /* #6BA3D6 */
+    --primary: 210 56% 63%;
     --primary-foreground: 240 3% 11%;
-
-    --secondary: 240 2% 18%;         /* #2C2C2E */
+    --secondary: 240 2% 18%;
     --secondary-foreground: 0 0% 89%;
-
     --muted: 240 2% 18%;
-    --muted-foreground: 240 2% 56%;  /* #8E8E93 */
-
+    --muted-foreground: 240 2% 56%;
     --accent: 240 2% 18%;
     --accent-foreground: 0 0% 89%;
-
     --destructive: 0 62% 40%;
     --destructive-foreground: 0 0% 98%;
-
-    --border: 240 1% 23%;            /* #3A3A3C */
+    --border: 240 1% 23%;
     --input: 240 1% 23%;
-    --ring: 210 56% 63%;             /* #6BA3D6 */
-
-    --warning: 35 70% 58%;           /* #E09B4E */
+    --ring: 210 56% 63%;
+    --warning: 35 70% 58%;
     --warning-foreground: 240 3% 11%;
 
-    /* ── Tybre custom properties (dark) ── */
     --bg: #1C1C1E;
     --bg-surface: #2C2C2E;
     --bg-overlay: rgba(28, 28, 30, 0.95);
@@ -117,10 +89,9 @@
     --tybre-accent-dim: rgba(107, 163, 214, 0.15);
     --code-bg: #2C2C2E;
     --selection: rgba(107, 163, 214, 0.25);
-    --status-text: #8E8E93;   /* 6.1:1 on dark --bg — WCAG AA */
+    --status-text: #8E8E93;
   }
 
-  /* System preference auto-detection */
   @media (prefers-color-scheme: dark) {
     :root:not(.light) {
       --background: 240 3% 11%;
@@ -165,7 +136,7 @@
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
     box-sizing: border-box;
   }
 
@@ -223,7 +194,6 @@
   color: var(--text);
 }
 
-/* Spec: H1=28px, H2=22px, H3=18px, H4=16px, H5/H6=14px at 16px base */
 .milkdown h1 { font-size: 1.75em; font-weight: 700; margin-top: 0.75em; }
 .milkdown h2 { font-size: 1.375em; font-weight: 600; }
 .milkdown h3 { font-size: 1.125em; font-weight: 500; color: var(--text); }
@@ -243,6 +213,13 @@
   color: var(--text-muted);
   background: var(--tybre-accent-dim);
   border-radius: 0 4px 4px 0;
+}
+
+/* Nested blockquotes */
+.milkdown blockquote blockquote {
+  margin: 0.5em 0;
+  border-left-color: var(--text-faint);
+  background: transparent;
 }
 
 .milkdown code {
@@ -283,34 +260,71 @@
   font-size: 0.875em;
 }
 
-/* ── Lists — fix Tailwind preflight removing markers ── */
+/* ============================================================
+   Lists — indentation fix
+   ============================================================ */
+
+/* Base list styles */
 .milkdown ul {
   list-style-type: disc;
-  padding-left: 1.75em;
+  padding-left: 1.5em;
   margin: 0.5em 0;
 }
 
 .milkdown ol {
   list-style-type: decimal;
-  padding-left: 1.75em;
+  padding-left: 1.5em;
   margin: 0.5em 0;
 }
 
-.milkdown ul ul { list-style-type: circle; }
+.milkdown ul ul { list-style-type: circle; margin: 0.2em 0; }
 .milkdown ul ul ul { list-style-type: square; }
+.milkdown ol ol { list-style-type: lower-alpha; margin: 0.2em 0; }
+.milkdown ol ol ol { list-style-type: lower-roman; }
 
 .milkdown li {
-  margin: 0.3em 0;
+  margin: 0.2em 0;
   display: list-item;
+  /* Ensure list markers render inside the content box */
+  list-style-position: outside;
+  /* Ensure bullet marker visible even when the list item is empty */
+  min-height: 1.5em;
 }
 
-/* ── Task list (GFM — Milkdown uses data-item-type="task" + data-checked) ── */
+/* Fix: Milkdown wraps list content in <p> — remove their margins
+   so list spacing is controlled by li margin alone */
+.milkdown li > p {
+  margin: 0;
+  display: inline;
+}
+
+/* When a list item has multiple paragraphs (loose list),
+   render them as blocks with controlled spacing */
+.milkdown li > p + p {
+  display: block;
+  margin-top: 0.5em;
+}
+
+/* Nested list — sits directly after inline text or <p>, add top gap */
+.milkdown li > ul,
+.milkdown li > ol {
+  margin-top: 0.25em;
+  margin-bottom: 0;
+}
+
+/* Code block inside a list item */
+.milkdown li > pre {
+  margin-top: 0.5em;
+}
+
+/* ── Task list ── */
 .milkdown li[data-item-type="task"] {
   list-style: none;
   display: flex;
   align-items: flex-start;
   gap: 0.5em;
   padding-left: 0;
+  margin-left: -0.25em; /* compensate for no marker */
 }
 
 .milkdown li[data-item-type="task"]::before {
@@ -333,13 +347,22 @@
   color: var(--text-muted);
 }
 
+/* Ensure task list text (wrapped in <p>) is inline */
+.milkdown li[data-item-type="task"] > p {
+  display: inline;
+  margin: 0;
+}
+
+/* ============================================================
+   Links, HR, Tables
+   ============================================================ */
+
 .milkdown a {
   color: var(--tybre-accent);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-color var(--transition-fast);
 }
-
 .milkdown a:hover { border-bottom-color: var(--tybre-accent); }
 
 .milkdown hr {
@@ -370,10 +393,26 @@
 .milkdown tr:hover td { background: var(--tybre-accent-dim); }
 
 /* ============================================================
-   Syntax-Reveal Token Styles (PoC core feature)
+   Syntax-Reveal Token Styles
    ============================================================ */
 
+/*
+ * Fix: tokens use position:absolute so they don't push heading text
+ * to the right. Heading text always aligns with paragraph text.
+ * When focused, the token slides into the left gutter (negative x).
+ */
+.milkdown .heading-node {
+  position: relative;
+}
+
 .syntax-token {
+  position: absolute;
+  right: 100%;          /* sits in the left gutter, outside the text flow */
+  top: 0;
+  white-space: nowrap;
+  padding-right: 0.35em;
+  pointer-events: none;
+  user-select: none;
   color: var(--text-faint);
   transition: opacity var(--transition-fast), color var(--transition-fast);
 }
