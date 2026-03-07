@@ -9,6 +9,7 @@ interface WorkspaceData {
   memoWidth: number;
   termAutoClaude: boolean;
   termYoloMode: boolean;
+  terminalOpen: boolean;
 }
 
 interface WorkspaceState extends WorkspaceData {
@@ -21,6 +22,8 @@ interface WorkspaceState extends WorkspaceData {
   setMemoWidth: (width: number) => void;
   setTermAutoClaude: (v: boolean) => void;
   setTermYoloMode: (v: boolean) => void;
+  toggleTerminal: () => void;
+  setTerminalOpen: (open: boolean) => void;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -33,6 +36,7 @@ function defaultWorkspace(): WorkspaceData {
     memoWidth: 280,
     termAutoClaude: false,
     termYoloMode: false,
+    terminalOpen: false,
   };
 }
 
@@ -43,7 +47,7 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function schedSave(getState: () => WorkspaceState) {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    const { projectPath, sidebarOpen, sidebarWidth, memoOpen, memoWidth, termAutoClaude, termYoloMode } = getState();
+    const { projectPath, sidebarOpen, sidebarWidth, memoOpen, memoWidth, termAutoClaude, termYoloMode, terminalOpen } = getState();
     if (!projectPath) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -56,6 +60,7 @@ function schedSave(getState: () => WorkspaceState) {
           memo_width: memoWidth,
           term_auto_claude: termAutoClaude,
           term_yolo_mode: termYoloMode,
+          terminal_open: terminalOpen,
         },
       });
     } catch {
@@ -80,6 +85,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         memo_width: number;
         term_auto_claude: boolean;
         term_yolo_mode: boolean;
+        terminal_open: boolean;
       }>("load_workspace", { projectPath });
       set({
         projectPath,
@@ -89,6 +95,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         memoWidth: ws.memo_width,
         termAutoClaude: ws.term_auto_claude,
         termYoloMode: ws.term_yolo_mode,
+        terminalOpen: ws.terminal_open,
       });
     } catch {
       set({ projectPath, ...defaultWorkspace() });
@@ -122,6 +129,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setTermYoloMode: (v) => {
     set({ termYoloMode: v });
+    schedSave(get);
+  },
+
+  toggleTerminal: () => {
+    set((s) => ({ terminalOpen: !s.terminalOpen }));
+    schedSave(get);
+  },
+
+  setTerminalOpen: (open) => {
+    set({ terminalOpen: open });
     schedSave(get);
   },
 }));

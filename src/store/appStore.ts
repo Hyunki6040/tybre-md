@@ -19,8 +19,6 @@ export interface FileEntry {
 // Theme is exported here so existing imports keep working;
 // settingsStore is the runtime owner of this value.
 export type Theme = "paper" | "ink" | "system";
-export type View = "editor" | "terminal";
-
 interface AppState {
   tabs: Tab[];
   activeTabId: string | null;
@@ -30,7 +28,6 @@ interface AppState {
   fileTree: FileEntry | null; // shared for QuickOpen access
   recentDirs: string[];       // recently opened directories (max 8)
 
-  view: View;
   quickOpenVisible: boolean;
   settingsVisible: boolean;
   findBarVisible: boolean;
@@ -46,7 +43,6 @@ interface AppState {
 
   setFileTree: (tree: FileEntry | null) => void;
   addRecentDir: (path: string) => void;
-  toggleView: () => void;
   setQuickOpenVisible: (visible: boolean) => void;
   setSettingsVisible: (visible: boolean) => void;
   setFindBarVisible: (visible: boolean) => void;
@@ -86,7 +82,6 @@ export const useAppStore = create<AppState>((set) => ({
   fileTree: null,
   recentDirs: JSON.parse(localStorage.getItem("tybre:recentDirs") ?? "[]"),
 
-  view: "editor",
   quickOpenVisible: false,
   settingsVisible: false,
   findBarVisible: false,
@@ -172,12 +167,6 @@ export const useAppStore = create<AppState>((set) => ({
       localStorage.setItem("tybre:recentDirs", JSON.stringify(next));
       return { recentDirs: next };
     });
-  },
-
-  toggleView: () => {
-    set((state) => ({
-      view: state.view === "editor" ? "terminal" : "editor",
-    }));
   },
 
   setQuickOpenVisible: (visible) => {

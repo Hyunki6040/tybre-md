@@ -528,6 +528,8 @@ pub struct WorkspaceState {
     pub term_auto_claude: bool,
     #[serde(default)]
     pub term_yolo_mode: bool,
+    #[serde(default)]
+    pub terminal_open: bool,
 }
 
 impl Default for WorkspaceState {
@@ -539,6 +541,7 @@ impl Default for WorkspaceState {
             memo_width: 280,
             term_auto_claude: false,
             term_yolo_mode: false,
+            terminal_open: false,
         }
     }
 }

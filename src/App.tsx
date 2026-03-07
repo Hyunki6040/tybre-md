@@ -55,21 +55,14 @@ import { ExportModal } from "@/components/ExportModal";
 import { SHORTCUT_DEFS, matchesCombo } from "@/lib/shortcuts";
 import { StatusBar } from "@/components/StatusBar";
 import { MilkdownEditor } from "@/editor/MilkdownEditor";
+import { CodeEditor } from "@/editor/CodeEditor";
 import { TerminalView } from "@/components/TerminalView";
 import { LanguageModal } from "@/components/LanguageModal";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useSwitchProject, getOpenProjects } from "@/hooks/useSwitchProject";
-
-// ── File type helpers ─────────────────────────────────────────────────────────
-
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
-
-function getFileExt(filePath: string | null): string {
-  if (!filePath) return "md";
-  return filePath.split(".").pop()?.toLowerCase() ?? "md";
-}
+import { IMAGE_EXTS, CODE_EXTS, getFileExt } from "@/lib/fileTypes";
 
 function ImageViewer({ filePath }: { filePath: string }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -126,8 +119,6 @@ export default function App() {
   const {
     tabs,
     activeTabId,
-    view,
-    toggleView,
     updateTabContent,
     markTabSaved,
     restoreLastTab,
@@ -148,6 +139,7 @@ export default function App() {
     resolvedTheme,
     setResolvedTheme,
     fontSize,
+    setFontSize,
     autoSave,
     customShortcuts,
     guideMode,
@@ -155,7 +147,7 @@ export default function App() {
     loadSettings,
   } = useSettingsStore();
 
-  const { toggleSidebar, loadWorkspace } = useWorkspaceStore();
+  const { toggleSidebar, loadWorkspace, terminalOpen, toggleTerminal, setTerminalOpen } = useWorkspaceStore();
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const switchProject = useSwitchProject();
@@ -262,7 +254,7 @@ export default function App() {
         // Don't overwrite unsaved user edits or binary files
         if (!tab || tab.isDirty) return;
         const ext = getFileExt(changedPath);
-        if (!["md", "txt"].includes(ext)) return;
+        if (IMAGE_EXTS.has(ext) || ext === "pdf") return;
 
         try {
           const content = await invoke<string>("read_file", { path: changedPath });
@@ -510,7 +502,7 @@ export default function App() {
       if (matches("terminal", e)) {
         e.preventDefault();
         if (guideMode) recordShortcutUse("terminal");
-        toggleView();
+        toggleTerminal();
         return;
       }
       // Ctrl+N — new file (if project open) or new tab
@@ -598,6 +590,22 @@ export default function App() {
         setSettingsVisible(true);
         return;
       }
+      // Font size
+      if (matches("font-size-increase", e)) {
+        e.preventDefault();
+        setFontSize(useSettingsStore.getState().fontSize + 1);
+        return;
+      }
+      if (matches("font-size-decrease", e)) {
+        e.preventDefault();
+        setFontSize(useSettingsStore.getState().fontSize - 1);
+        return;
+      }
+      if (matches("font-size-reset", e)) {
+        e.preventDefault();
+        setFontSize(16);
+        return;
+      }
       // ⌘1-9: switch tab (metaKey only, no ctrlKey)
       if (e.metaKey && !e.ctrlKey && e.key >= "1" && e.key <= "9") {
         const idx = parseInt(e.key, 10) - 1;
@@ -622,9 +630,9 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toggleSidebar, toggleView, restoreLastTab, setActiveTab, setQuickOpenVisible,
+    [toggleSidebar, toggleTerminal, restoreLastTab, setActiveTab, setQuickOpenVisible,
      setSettingsVisible, setFindBarVisible, setProjectSearchVisible, setExportVisible,
-     guideMode, recordShortcutUse, customShortcuts, switchProject]
+     guideMode, recordShortcutUse, customShortcuts, switchProject, setFontSize]
   );
 
   useEffect(() => {
@@ -640,7 +648,8 @@ export default function App() {
 
     // Only save text-based file types — never overwrite binary files (images, pdf)
     const ext = getFileExt(tab.filePath);
-    if (!["md", "txt"].includes(ext) && tab.filePath !== null) return;
+    const isTextFile = ext === "md" || ext === "txt" || CODE_EXTS.has(ext);
+    if (!isTextFile && tab.filePath !== null) return;
 
     if (!tab.filePath) {
       // No path yet — show native Save As dialog
@@ -681,6 +690,8 @@ export default function App() {
       const { tabs } = useAppStore.getState();
       const tab = tabs.find((t) => t.id === activeTabId);
       if (!tab?.filePath) return;
+      const ext = getFileExt(tab.filePath);
+      if (ext !== "md" && ext !== "txt" && !CODE_EXTS.has(ext)) return;
 
       import("@tauri-apps/api/core")
         .then(({ invoke }) =>
@@ -718,7 +729,7 @@ export default function App() {
                 onClick={() => {
                   setPendingTerminalCommand("curl -fsSL https://claude.ai/install.sh | bash");
                   setClaudeInstalled(null);
-                  if (view !== "terminal") toggleView();
+                  if (!terminalOpen) setTerminalOpen(true);
                 }}
                 className="px-2.5 py-1 rounded text-[11px] font-medium transition-colors"
                 style={{
@@ -823,6 +834,16 @@ export default function App() {
               if (ext === "txt") {
                 return <TxtViewer key={activeTab.id} content={activeTab.content} />;
               }
+              if (CODE_EXTS.has(ext)) {
+                return (
+                  <CodeEditor
+                    key={activeTab.id}
+                    filePath={activeTab.filePath}
+                    initialContent={activeTab.content}
+                    onChange={handleEditorChange}
+                  />
+                );
+              }
               return (
                 <MilkdownEditor
                   key={activeTab.id}
@@ -843,13 +864,13 @@ export default function App() {
               </div>
             )}
             {activeTab && getFileExt(activeTab.filePath) === "md" && (
-              <StatusBar content={activeTab.content} onToggleTerminal={toggleView} terminalVisible={view === "terminal"} />
+              <StatusBar content={activeTab.content} onToggleTerminal={toggleTerminal} />
             )}
           </div>
 
           {/* Terminal — xterm.js + portable-pty */}
           <TerminalView
-            visible={view === "terminal"}
+            visible={terminalOpen}
             projectPath={fileTree?.path ?? null}
             onProjectChange={async (path) => {
               const { invoke } = await import("@tauri-apps/api/core");
