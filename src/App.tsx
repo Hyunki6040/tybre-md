@@ -4,47 +4,6 @@ import { useAppStore, type Tab } from "@/store/appStore";
 import { useSettingsStore } from "@/store/settingsStore";
 import { useWorkspaceStore } from "@/store/workspaceStore";
 
-// ── Session types (must match Rust WindowSession struct) ─────────────────────
-interface WindowSession {
-  is_main: boolean;
-  project_path: string | null;
-  open_files: string[];
-  active_file: string | null;
-}
-
-/** Load file content for each path, skip missing files, bulk-replace store tabs. */
-async function restoreTabsFromSession(
-  session: Pick<WindowSession, "open_files" | "active_file" | "project_path">,
-  invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
-) {
-  const results = await Promise.all(
-    session.open_files.map(async (filePath) => {
-      try {
-        const content = await invoke<string>("read_file", { path: filePath });
-        const tab: Tab = {
-          id: `tab-restore-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          filePath,
-          projectPath: session.project_path ?? null,
-          title: filePath.split("/").pop() ?? filePath,
-          content,
-          isDirty: false,
-        };
-        return tab;
-      } catch {
-        return null; // file deleted — skip
-      }
-    })
-  );
-
-  const tabs = results.filter((t): t is Tab => t !== null);
-  if (tabs.length === 0) return;
-
-  const activeTabId =
-    tabs.find((t) => t.filePath === session.active_file)?.id ??
-    tabs[tabs.length - 1].id;
-
-  useAppStore.setState({ tabs, activeTabId, closedTabs: [] });
-}
 import { TabBar } from "@/components/TabBar";
 import { Sidebar } from "@/components/Sidebar";
 import { QuickOpen } from "@/components/QuickOpen";
@@ -230,6 +189,9 @@ export default function App() {
   // Auto-save timer ref
   const autoSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Terminal focus ref — TerminalView registers its focus function here
+  const terminalFocusRef = useRef<(() => void) | null>(null);
+
   // ── Apply persisted font size on mount ───────────────────────────────────
   useEffect(() => {
     document.documentElement.style.setProperty("--font-size-base", `${fontSize}px`);
@@ -288,112 +250,150 @@ export default function App() {
     sessionRestoredRef.current = true;
 
     async function restoreOrOpen() {
-      // Load global settings from file (non-blocking; applies theme/fontSize/etc.)
+      // Load global settings (non-blocking; applies theme/fontSize/etc.)
       loadSettings().catch(console.error);
 
-      const { invoke } = await import("@tauri-apps/api/core");
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-
-      const windowLabel = getCurrentWindow().label;
-      const isMainWindow = windowLabel === "main";
-      const params = new URLSearchParams(window.location.search);
-      const projectPathParam = params.get("project");
-
-      // Load persisted sessions (no-op outside Tauri / first launch)
-      let sessions: WindowSession[] = [];
       try {
-        sessions = await invoke<WindowSession[]>("load_session");
-      } catch { /* browser dev mode or first launch */ }
+        const { invoke } = await import("@tauri-apps/api/core");
 
-      // Find this window's matching session
-      const mySession: WindowSession | undefined = isMainWindow
-        ? sessions.find((s) => s.is_main)
-        : sessions.find((s) => !s.is_main && s.project_path === projectPathParam);
+        // Load last session: list of open project paths + which was active
+        const lastSession = await invoke<{
+          open_projects: string[];
+          active_project: string | null;
+        }>("load_last_session").catch(() => ({ open_projects: [] as string[], active_project: null }));
 
-      // Project to open: prefer saved session path, fall back to URL param
-      const projectToOpen = mySession?.project_path ?? projectPathParam ?? null;
+        const { open_projects, active_project } = lastSession;
+        if (open_projects.length === 0) return; // first launch — show welcome screen
 
-      if (projectToOpen) {
+        const activeProj = active_project ?? open_projects[0];
+
+        // Load each project's saved tabs concurrently
+        const results = await Promise.allSettled(
+          open_projects.map(async (projPath) => {
+            const saved = await invoke<{
+              open_tabs: string[];
+              active_tab: string | null;
+            }>("load_project_tabs", { projectPath: projPath }).catch(
+              () => ({ open_tabs: [] as string[], active_tab: null })
+            );
+
+            const tabResults = await Promise.all(
+              saved.open_tabs.map(async (filePath) => {
+                try {
+                  const content = await invoke<string>("read_file", { path: filePath });
+                  return {
+                    id: `tab-r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    filePath,
+                    projectPath: projPath,
+                    title: filePath.split("/").pop() ?? filePath,
+                    content,
+                    isDirty: false,
+                  } as Tab;
+                } catch {
+                  return null; // file deleted — skip
+                }
+              })
+            );
+
+            return {
+              projPath,
+              tabs: tabResults.filter((t): t is Tab => t !== null),
+              activeTabFile: saved.active_tab,
+            };
+          })
+        );
+
+        // Accumulate tabs from all projects
+        const allTabs: Tab[] = [];
+        let activeTabId: string | null = null;
+
+        for (const r of results) {
+          if (r.status !== "fulfilled") continue;
+          const { projPath, tabs, activeTabFile } = r.value;
+          allTabs.push(...tabs);
+          if (projPath === activeProj && activeTabFile) {
+            const found = tabs.find((t) => t.filePath === activeTabFile);
+            if (found) activeTabId = found.id;
+          }
+        }
+
+        if (allTabs.length > 0) {
+          activeTabId ??= allTabs[0].id;
+          useAppStore.setState({ tabs: allTabs, activeTabId, closedTabs: [] });
+        }
+
+        // Open active project file tree + workspace state
         try {
-          const tree = await invoke<import("@/store/appStore").FileEntry>(
-            "open_folder", { path: projectToOpen }
-          );
+          const [tree] = await Promise.all([
+            invoke<import("@/store/appStore").FileEntry>("open_folder", { path: activeProj }),
+            loadWorkspace(activeProj),
+          ]);
           setFileTree(tree);
-          addRecentDir(projectToOpen);
-          // Load project workspace state (sidebar, memo, etc.)
-          loadWorkspace(projectToOpen).catch(console.error);
-          // Record in recent-projects.json
-          const projectName = projectToOpen.split("/").pop() ?? projectToOpen;
-          invoke("add_recent_project", { path: projectToOpen, name: projectName }).catch(console.error);
+          addRecentDir(activeProj);
+          invoke("add_recent_project", {
+            path: activeProj,
+            name: activeProj.split("/").pop() ?? activeProj,
+          }).catch(console.error);
         } catch { /* project folder removed since last session */ }
-      }
 
-      // Restore open tabs for this window
-      if (mySession && mySession.open_files.length > 0) {
-        await restoreTabsFromSession(mySession, invoke as Parameters<typeof restoreTabsFromSession>[1]);
-      }
-
-      // ── Main window only: spawn child windows for saved project sessions ──
-      if (!isMainWindow) return;
-
-      const childSessions = sessions.filter(
-        (s) => !s.is_main && s.project_path && s.project_path !== projectToOpen
-      );
-      if (childSessions.length === 0) return;
-
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      for (const session of childSessions) {
-        const projectName = session.project_path!.split("/").pop() ?? "Project";
-        const label = `restore-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        new WebviewWindow(label, {
-          url: `/?project=${encodeURIComponent(session.project_path!)}`,
-          title: `${projectName} — Tybre.md`,
-          width: 1280,
-          height: 800,
-          minWidth: 800,
-          minHeight: 600,
-        });
-        // Small stagger to avoid resource contention
-        await new Promise<void>((r) => setTimeout(r, 120));
-      }
+      } catch { /* browser dev mode */ }
     }
 
     restoreOrOpen().catch(console.error);
   }, []);
 
   // ── Session save (debounced) ──────────────────────────────────────────────
-  // Subscribes to store; whenever project/tabs/activeTab change, persists session.
-  const windowLabelRef = useRef<string>("main");
+  // Saves per-project tabs to .tybre/tabs.json and the global open-project
+  // list to ~/Library/Application Support/Tybre/last-session.json so that
+  // the next launch can restore all projects and their tabs.
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    // Cache window label synchronously (getCurrentWindow is sync in Tauri v2)
-    import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => {
-        windowLabelRef.current = getCurrentWindow().label;
-      })
-      .catch(() => { windowLabelRef.current = "main"; });
-
     function schedSave() {
       if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
       sessionSaveTimerRef.current = setTimeout(async () => {
         const { fileTree, tabs, activeTabId } = useAppStore.getState();
-        const isMain = windowLabelRef.current === "main";
-        const openFiles = tabs.filter((t) => t.filePath).map((t) => t.filePath as string);
-        const activeFile = tabs.find((t) => t.id === activeTabId)?.filePath ?? null;
+        if (!fileTree) return;
+
         try {
           const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("update_window_session", {
-            isMain,
-            projectPath: fileTree?.path ?? null,
-            openFiles,
-            activeFile,
+
+          // Group tabs by project (skip unsaved/untitled and non-project tabs)
+          const byProject = new Map<string, { files: string[]; activeFile: string | null }>();
+          for (const tab of tabs) {
+            if (!tab.filePath || !tab.projectPath) continue;
+            if (!byProject.has(tab.projectPath)) {
+              byProject.set(tab.projectPath, { files: [], activeFile: null });
+            }
+            byProject.get(tab.projectPath)!.files.push(tab.filePath);
+          }
+
+          // Mark active tab's file for its project
+          const activeTab = tabs.find((t) => t.id === activeTabId);
+          if (activeTab?.filePath && activeTab.projectPath && byProject.has(activeTab.projectPath)) {
+            byProject.get(activeTab.projectPath)!.activeFile = activeTab.filePath;
+          }
+
+          // Save each project's tab list to .tybre/tabs.json
+          await Promise.all(
+            Array.from(byProject.entries()).map(([projPath, { files, activeFile }]) =>
+              invoke("save_project_tabs", {
+                projectPath: projPath,
+                tabs: { open_tabs: files, active_tab: activeFile, terminal_session_names: [] },
+              })
+            )
+          );
+
+          // Save global last session (which projects were open + which was active)
+          await invoke("save_last_session", {
+            openProjects: Array.from(byProject.keys()),
+            activeProject: fileTree.path,
           });
-        } catch { /* browser / not Tauri */ }
+        } catch { /* browser mode */ }
       }, 1500);
     }
 
-    // Only re-save when project, tabs, or active tab actually change
+    // Re-save whenever project, tabs, or active tab changes
     const unsub = useAppStore.subscribe((s, prev) => {
       if (
         s.fileTree !== prev.fileTree ||
@@ -407,43 +407,6 @@ export default function App() {
     return () => {
       unsub();
       if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
-    };
-  }, []);
-
-  // ── Remove session when window is explicitly closed by the user ───────────
-  // onCloseRequested fires for individual close (X button).
-  // When Cmd+Q / Ctrl+Q is used the user expects full restore, so we DON'T
-  // delete sessions in that path. We detect that via a flag set on keydown.
-  useEffect(() => {
-    let isAppQuitting = false;
-    let unlistenClose: (() => void) | null = null;
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "q" || e.key === "Q")) {
-        isAppQuitting = true;
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-
-    import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
-      const win = getCurrentWindow();
-      unlistenClose = await win.onCloseRequested(async () => {
-        // If the user is quitting the whole app, preserve sessions so they
-        // can be restored on next launch.
-        if (isAppQuitting) return;
-        // Individual window close — remove its session entry.
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const isMain = windowLabelRef.current === "main";
-          const projectPath = useAppStore.getState().fileTree?.path ?? null;
-          await invoke("remove_window_session", { isMain, projectPath });
-        } catch { /* noop */ }
-      });
-    }).catch(() => {});
-
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      unlistenClose?.();
     };
   }, []);
 
@@ -606,6 +569,26 @@ export default function App() {
         setFontSize(16);
         return;
       }
+      // Focus editor area
+      if (matches("focus-editor", e)) {
+        e.preventDefault();
+        const el =
+          (document.querySelector(".ProseMirror") as HTMLElement | null) ??
+          (document.querySelector(".cm-content") as HTMLElement | null);
+        el?.focus();
+        return;
+      }
+      // Focus terminal area (open if closed, then focus)
+      if (matches("focus-terminal", e)) {
+        e.preventDefault();
+        if (!terminalOpen) {
+          setTerminalOpen(true);
+          setTimeout(() => terminalFocusRef.current?.(), 200);
+        } else {
+          terminalFocusRef.current?.();
+        }
+        return;
+      }
       // ⌘1-9: switch tab (metaKey only, no ctrlKey)
       if (e.metaKey && !e.ctrlKey && e.key >= "1" && e.key <= "9") {
         const idx = parseInt(e.key, 10) - 1;
@@ -630,7 +613,8 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toggleSidebar, toggleTerminal, restoreLastTab, setActiveTab, setQuickOpenVisible,
+    [toggleSidebar, toggleTerminal, setTerminalOpen, terminalOpen,
+     restoreLastTab, setActiveTab, setQuickOpenVisible,
      setSettingsVisible, setFindBarVisible, setProjectSearchVisible, setExportVisible,
      guideMode, recordShortcutUse, customShortcuts, switchProject, setFontSize]
   );
@@ -872,6 +856,7 @@ export default function App() {
           <TerminalView
             visible={terminalOpen}
             projectPath={fileTree?.path ?? null}
+            focusRef={terminalFocusRef}
             onProjectChange={async (path) => {
               const { invoke } = await import("@tauri-apps/api/core");
 
@@ -884,13 +869,15 @@ export default function App() {
                 }
               }
 
-              // Load new project
-              const tree = await invoke<import("@/store/appStore").FileEntry>(
-                "open_folder", { path }
-              );
+              // Load project tree and workspace concurrently;
+              // setFileTree only after loadWorkspace resolves so that
+              // terminalOpen is already correct when projectPath prop changes.
+              const [tree] = await Promise.all([
+                invoke<import("@/store/appStore").FileEntry>("open_folder", { path }),
+                loadWorkspace(path),
+              ]);
               setFileTree(tree);
               addRecentDir(path);
-              loadWorkspace(path).catch(console.error);
               const pName = path.split("/").pop() ?? path;
               invoke("add_recent_project", { path, name: pName }).catch(console.error);
 

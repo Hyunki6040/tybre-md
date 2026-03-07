@@ -617,3 +617,62 @@ fn build_file_tree(path: &str) -> Result<FileEntry, String> {
         Ok(FileEntry { name, path: path.to_string(), is_dir: false, children: None })
     }
 }
+
+// ── Last session (multi-project restore) ─────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct LastSession {
+    #[serde(default)]
+    pub open_projects: Vec<String>,
+    #[serde(default)]
+    pub active_project: Option<String>,
+}
+
+#[command]
+pub fn load_last_session() -> LastSession {
+    let Some(dir) = app_config_dir() else { return LastSession::default() };
+    let Ok(contents) = fs::read_to_string(dir.join("last-session.json")) else { return LastSession::default() };
+    let mut s: LastSession = serde_json::from_str(&contents).unwrap_or_default();
+    // Filter out projects whose folder no longer exists on disk
+    s.open_projects.retain(|p| Path::new(p).exists());
+    if let Some(ref ap) = s.active_project {
+        if !Path::new(ap).exists() {
+            s.active_project = s.open_projects.first().cloned();
+        }
+    }
+    s
+}
+
+#[command]
+pub fn save_last_session(open_projects: Vec<String>, active_project: Option<String>) -> Result<(), String> {
+    let Some(dir) = app_config_dir() else { return Err("cannot resolve config dir".into()) };
+    let s = LastSession { open_projects, active_project };
+    let json = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
+    fs::write(dir.join("last-session.json"), json).map_err(|e| e.to_string())
+}
+
+// ── Project tabs / session restoration ───────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ProjectTabsState {
+    #[serde(default)]
+    pub open_tabs: Vec<String>,
+    #[serde(default)]
+    pub active_tab: Option<String>,
+    #[serde(default)]
+    pub terminal_session_names: Vec<String>,
+}
+
+#[command]
+pub fn load_project_tabs(project_path: String) -> ProjectTabsState {
+    let Some(dir) = project_tybre_dir(&project_path) else { return ProjectTabsState::default() };
+    let Ok(contents) = fs::read_to_string(dir.join("tabs.json")) else { return ProjectTabsState::default() };
+    serde_json::from_str::<ProjectTabsState>(&contents).unwrap_or_default()
+}
+
+#[command]
+pub fn save_project_tabs(project_path: String, tabs: ProjectTabsState) -> Result<(), String> {
+    let Some(dir) = project_tybre_dir(&project_path) else { return Err("cannot resolve .tybre dir".into()) };
+    let json = serde_json::to_string_pretty(&tabs).map_err(|e| e.to_string())?;
+    fs::write(dir.join("tabs.json"), json).map_err(|e| e.to_string())
+}
