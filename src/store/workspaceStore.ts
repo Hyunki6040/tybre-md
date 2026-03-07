@@ -7,6 +7,8 @@ interface WorkspaceData {
   sidebarWidth: number;
   memoOpen: boolean;
   memoWidth: number;
+  termAutoClaude: boolean;
+  termYoloMode: boolean;
 }
 
 interface WorkspaceState extends WorkspaceData {
@@ -17,12 +19,21 @@ interface WorkspaceState extends WorkspaceData {
   setSidebarWidth: (width: number) => void;
   setMemoOpen: (open: boolean) => void;
   setMemoWidth: (width: number) => void;
+  setTermAutoClaude: (v: boolean) => void;
+  setTermYoloMode: (v: boolean) => void;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 function defaultWorkspace(): WorkspaceData {
-  return { sidebarOpen: true, sidebarWidth: 240, memoOpen: false, memoWidth: 280 };
+  return {
+    sidebarOpen: true,
+    sidebarWidth: 240,
+    memoOpen: false,
+    memoWidth: 280,
+    termAutoClaude: false,
+    termYoloMode: false,
+  };
 }
 
 // ── Debounced file save ───────────────────────────────────────────────────────
@@ -32,7 +43,7 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function schedSave(getState: () => WorkspaceState) {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    const { projectPath, sidebarOpen, sidebarWidth, memoOpen, memoWidth } = getState();
+    const { projectPath, sidebarOpen, sidebarWidth, memoOpen, memoWidth, termAutoClaude, termYoloMode } = getState();
     if (!projectPath) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -43,6 +54,8 @@ function schedSave(getState: () => WorkspaceState) {
           sidebar_width: sidebarWidth,
           memo_open: memoOpen,
           memo_width: memoWidth,
+          term_auto_claude: termAutoClaude,
+          term_yolo_mode: termYoloMode,
         },
       });
     } catch {
@@ -65,6 +78,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         sidebar_width: number;
         memo_open: boolean;
         memo_width: number;
+        term_auto_claude: boolean;
+        term_yolo_mode: boolean;
       }>("load_workspace", { projectPath });
       set({
         projectPath,
@@ -72,6 +87,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         sidebarWidth: ws.sidebar_width,
         memoOpen: ws.memo_open,
         memoWidth: ws.memo_width,
+        termAutoClaude: ws.term_auto_claude,
+        termYoloMode: ws.term_yolo_mode,
       });
     } catch {
       set({ projectPath, ...defaultWorkspace() });
@@ -95,6 +112,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setMemoWidth: (width) => {
     set({ memoWidth: width });
+    schedSave(get);
+  },
+
+  setTermAutoClaude: (v) => {
+    set({ termAutoClaude: v });
+    schedSave(get);
+  },
+
+  setTermYoloMode: (v) => {
+    set({ termYoloMode: v });
     schedSave(get);
   },
 }));

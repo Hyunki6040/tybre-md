@@ -523,11 +523,23 @@ pub struct WorkspaceState {
     pub sidebar_width: u32,
     pub memo_open: bool,
     pub memo_width: u32,
+    // Terminal per-project settings — absent in old files, falls back to false via #[serde(default)]
+    #[serde(default)]
+    pub term_auto_claude: bool,
+    #[serde(default)]
+    pub term_yolo_mode: bool,
 }
 
 impl Default for WorkspaceState {
     fn default() -> Self {
-        WorkspaceState { sidebar_open: true, sidebar_width: 240, memo_open: false, memo_width: 280 }
+        WorkspaceState {
+            sidebar_open: true,
+            sidebar_width: 240,
+            memo_open: false,
+            memo_width: 280,
+            term_auto_claude: false,
+            term_yolo_mode: false,
+        }
     }
 }
 

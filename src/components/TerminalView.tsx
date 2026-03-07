@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { useAppStore } from "@/store/appStore";
 import { useSettingsStore } from "@/store/settingsStore";
+import { useWorkspaceStore } from "@/store/workspaceStore";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -160,14 +161,18 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   // Settings dropdown
-  const [autoClaude, setAutoClaude] = useState<boolean>(
-    () => JSON.parse(localStorage.getItem("tybre:autoClaude") ?? "false")
-  );
+  const {
+    termAutoClaude: autoClaude,
+    termYoloMode: yoloMode,
+    setTermAutoClaude,
+    setTermYoloMode,
+  } = useWorkspaceStore();
   const autoClaudeRef = useRef(autoClaude);
-  const [yoloMode, setYoloMode] = useState<boolean>(
-    () => JSON.parse(localStorage.getItem("tybre:yoloMode") ?? "false")
-  );
   const yoloModeRef = useRef(yoloMode);
+
+  // Keep refs in sync with store (needed for async callbacks)
+  useEffect(() => { autoClaudeRef.current = autoClaude; }, [autoClaude]);
+  useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -658,17 +663,13 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   function toggleAutoClaude() {
     const next = !autoClaude;
     autoClaudeRef.current = next;
-    setAutoClaude(next);
-    localStorage.setItem("tybre:autoClaude", JSON.stringify(next));
+    setTermAutoClaude(next);
   }
 
   function toggleYoloMode() {
-    setYoloMode((prev: boolean) => {
-      const next = !prev;
-      yoloModeRef.current = next;
-      localStorage.setItem("tybre:yoloMode", JSON.stringify(next));
-      return next;
-    });
+    const next = !yoloMode;
+    yoloModeRef.current = next;
+    setTermYoloMode(next);
   }
 
   // ── Queue panel keyboard handler ─────────────────────────────────────────
