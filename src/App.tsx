@@ -1,5 +1,8 @@
 import { useEffect, useCallback, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useAppStore, type Tab } from "@/store/appStore";
+import { useSettingsStore } from "@/store/settingsStore";
+import { useWorkspaceStore } from "@/store/workspaceStore";
 
 // ── Session types (must match Rust WindowSession struct) ─────────────────────
 interface WindowSession {
@@ -53,8 +56,11 @@ import { SHORTCUT_DEFS, matchesCombo } from "@/lib/shortcuts";
 import { StatusBar } from "@/components/StatusBar";
 import { MilkdownEditor } from "@/editor/MilkdownEditor";
 import { TerminalView } from "@/components/TerminalView";
+import { LanguageModal } from "@/components/LanguageModal";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useSwitchProject, getOpenProjects } from "@/hooks/useSwitchProject";
 
 // ── File type helpers ─────────────────────────────────────────────────────────
 
@@ -116,15 +122,12 @@ function TxtViewer({ content }: { content: string }) {
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const {
     tabs,
     activeTabId,
     view,
-    theme,
-    resolvedTheme,
-    toggleSidebar,
     toggleView,
-    setResolvedTheme,
     updateTabContent,
     markTabSaved,
     restoreLastTab,
@@ -137,15 +140,25 @@ export default function App() {
     findBarVisible, setFindBarVisible,
     projectSearchVisible, setProjectSearchVisible,
     exportVisible, setExportVisible,
+    setPendingTerminalCommand,
+  } = useAppStore();
+
+  const {
+    theme,
+    resolvedTheme,
+    setResolvedTheme,
     fontSize,
     autoSave,
     customShortcuts,
     guideMode,
     recordShortcutUse,
-    setPendingTerminalCommand,
-  } = useAppStore();
+    loadSettings,
+  } = useSettingsStore();
+
+  const { toggleSidebar, loadWorkspace } = useWorkspaceStore();
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
+  const switchProject = useSwitchProject();
 
   // ── Claude CLI install banner ────────────────────────────────────────────
   const [claudeInstalled, setClaudeInstalled] = useState<boolean | null>(null);
@@ -283,6 +296,9 @@ export default function App() {
     sessionRestoredRef.current = true;
 
     async function restoreOrOpen() {
+      // Load global settings from file (non-blocking; applies theme/fontSize/etc.)
+      loadSettings().catch(console.error);
+
       const { invoke } = await import("@tauri-apps/api/core");
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
 
@@ -312,6 +328,11 @@ export default function App() {
           );
           setFileTree(tree);
           addRecentDir(projectToOpen);
+          // Load project workspace state (sidebar, memo, etc.)
+          loadWorkspace(projectToOpen).catch(console.error);
+          // Record in recent-projects.json
+          const projectName = projectToOpen.split("/").pop() ?? projectToOpen;
+          invoke("add_recent_project", { path: projectToOpen, name: projectName }).catch(console.error);
         } catch { /* project folder removed since last session */ }
       }
 
@@ -577,8 +598,8 @@ export default function App() {
         setSettingsVisible(true);
         return;
       }
-      // Tab switch Cmd+1~9
-      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
+      // ⌘1-9: switch tab (metaKey only, no ctrlKey)
+      if (e.metaKey && !e.ctrlKey && e.key >= "1" && e.key <= "9") {
         const idx = parseInt(e.key, 10) - 1;
         const { tabs } = useAppStore.getState();
         if (tabs[idx]) {
@@ -588,11 +609,22 @@ export default function App() {
         }
         return;
       }
+      // Ctrl+1-9: switch project (ctrlKey only, no metaKey)
+      if (e.ctrlKey && !e.metaKey && e.key >= "1" && e.key <= "9") {
+        const idx = parseInt(e.key, 10) - 1;
+        const { tabs } = useAppStore.getState();
+        const projects = getOpenProjects(tabs);
+        if (projects[idx]) {
+          e.preventDefault();
+          switchProject(projects[idx].path).catch(console.error);
+        }
+        return;
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [toggleSidebar, toggleView, restoreLastTab, setActiveTab, setQuickOpenVisible,
      setSettingsVisible, setFindBarVisible, setProjectSearchVisible, setExportVisible,
-     guideMode, recordShortcutUse, customShortcuts]
+     guideMode, recordShortcutUse, customShortcuts, switchProject]
   );
 
   useEffect(() => {
@@ -679,8 +711,8 @@ export default function App() {
           {claudeInstalled === false && (
             <div className="flex items-center gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[12px] shrink-0">
               <span className="flex-1" style={{ color: "var(--foreground)" }}>
-                <span className="font-semibold">Claude CLI를 찾을 수 없습니다.</span>{" "}
-                <span style={{ color: "var(--muted-foreground)" }}>터미널에서 자동 설치할 수 있습니다.</span>
+                <span className="font-semibold">{t("app.claudeNotFound")}</span>{" "}
+                <span style={{ color: "var(--muted-foreground)" }}>{t("app.claudeInstallHint")}</span>
               </span>
               <button
                 onClick={() => {
@@ -696,7 +728,7 @@ export default function App() {
                 onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(245,158,11,0.25)")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(245,158,11,0.15)")}
               >
-                터미널에서 설치
+                {t("app.installInTerminal")}
               </button>
               <button
                 onClick={() => setClaudeInstalled(null)}
@@ -715,16 +747,16 @@ export default function App() {
               <span className="flex-1" style={{ color: "var(--foreground)" }}>
                 {updatePhase === "ready" ? (
                   <>
-                    <span className="font-semibold">업데이트 완료.</span>{" "}
-                    <span style={{ color: "var(--muted-foreground)" }}>재시작하면 새 버전이 적용됩니다.</span>
+                    <span className="font-semibold">{t("app.updateDone")}</span>{" "}
+                    <span style={{ color: "var(--muted-foreground)" }}>{t("app.updateRestartHint")}</span>
                   </>
                 ) : updatePhase === "downloading" ? (
                   <span className="font-semibold" style={{ color: "var(--muted-foreground)" }}>
-                    다운로드 중… {downloadPct > 0 ? `${downloadPct}%` : ""}
+                    {t("app.downloading", { pct: downloadPct > 0 ? `${downloadPct}%` : "" })}
                   </span>
                 ) : (
                   <>
-                    <span className="font-semibold">버전 {updateInfo.version} 업데이트가 있습니다.</span>
+                    <span className="font-semibold">{t("app.updateAvailable", { version: updateInfo.version })}</span>
                     {updateInfo.body && (
                       <span style={{ color: "var(--muted-foreground)" }}>
                         {" "}{updateInfo.body.split("\n")[0].slice(0, 80)}
@@ -748,7 +780,7 @@ export default function App() {
                   onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(59,130,246,0.25)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(59,130,246,0.15)")}
                 >
-                  지금 재시작
+                  {t("app.restartNow")}
                 </button>
               ) : updatePhase === "idle" ? (
                 <button
@@ -758,7 +790,7 @@ export default function App() {
                   onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(59,130,246,0.22)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(59,130,246,0.12)")}
                 >
-                  지금 업데이트
+                  {t("app.updateNow")}
                 </button>
               ) : null}
 
@@ -811,7 +843,7 @@ export default function App() {
               </div>
             )}
             {activeTab && getFileExt(activeTab.filePath) === "md" && (
-              <StatusBar content={activeTab.content} onToggleTerminal={toggleView} />
+              <StatusBar content={activeTab.content} onToggleTerminal={toggleView} terminalVisible={view === "terminal"} />
             )}
           </div>
 
@@ -837,6 +869,9 @@ export default function App() {
               );
               setFileTree(tree);
               addRecentDir(path);
+              loadWorkspace(path).catch(console.error);
+              const pName = path.split("/").pop() ?? path;
+              invoke("add_recent_project", { path, name: pName }).catch(console.error);
 
               // Restore last tab for the new project
               const { projectLastTab, tabs } = useAppStore.getState();
@@ -867,6 +902,8 @@ export default function App() {
         {settingsVisible && <Settings />}
         {projectSearchVisible && <ProjectSearch />}
         {exportVisible && <ExportModal />}
+        <LanguageModal />
+        <ProjectSwitcher />
       </div>
     </TooltipProvider>
   );

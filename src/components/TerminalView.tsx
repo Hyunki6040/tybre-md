@@ -16,8 +16,11 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Settings2, Check, Plus, X, ListOrdered, ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
+import { Settings2, Check, Plus, X, ListOrdered, ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import { useAppStore } from "@/store/appStore";
+import { useSettingsStore } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -61,7 +64,6 @@ interface TermSession {
   id: string;
   name: string;
   projectPath: string | null;
-  busy: boolean;
 }
 
 interface TermInstance {
@@ -86,6 +88,9 @@ interface SessionGroup {
   projectName: string;
   sessions: TermSession[];
 }
+
+// Session group color hues (matches TabBar GROUP_HUES)
+const SESS_GROUP_HUES = [210, 262, 152, 38, 355];
 
 // Session tab layout constants
 const SESS_GROUP_HEADER_PX = 80;
@@ -113,7 +118,8 @@ function termFitDims(fit: FitAddon): { cols: number; rows: number } {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function TerminalView({ visible, projectPath, onProjectChange }: TerminalViewProps) {
-  const resolvedTheme = useAppStore((s) => s.resolvedTheme);
+  const { t } = useTranslation();
+  const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
 
   // Session list & active selection
   const [sessions, setSessions] = useState<TermSession[]>([]);
@@ -132,10 +138,17 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   const termDivsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const busyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const busySessionsRef = useRef<Set<string>>(new Set());
+  // Tracks when each session became busy — used to filter out brief shell-prompt outputs
+  const busyStartTimeRef = useRef<Map<string, number>>(new Map());
+
+  // Separate state sets for busy / just-done indicators (independent of sessions array)
+  const [busySessions, setBusySessions] = useState<Set<string>>(new Set());
+  const [justDoneSessions, setJustDoneSessions] = useState<Set<string>>(new Set());
+  const justDoneTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Session grouping
-  const [termGroupOrder, setTermGroupOrder] = useState<string[]>([]);
   const [expandedTermGroups, setExpandedTermGroups] = useState<Set<string>>(new Set(["__none__"]));
+  const [lastUsedSessionPerGroup, setLastUsedSessionPerGroup] = useState<Record<string, string>>({});
   const [sessTabWidth, setSessTabWidth] = useState(1200);
   const [sessOverflowOpen, setSessOverflowOpen] = useState(false);
   const sessTabRef = useRef<HTMLDivElement>(null);
@@ -208,7 +221,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     const id = genId();
     setSessions((prev) => {
       const name = `shell ${prev.length + 1}`;
-      return [...prev, { id, name, projectPath: projPath, busy: false }];
+      return [...prev, { id, name, projectPath: projPath }];
     });
     setActiveSessionId(id);
   }, []);
@@ -226,6 +239,14 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     if (timer) clearTimeout(timer);
     busyTimersRef.current.delete(sessionId);
     busySessionsRef.current.delete(sessionId);
+
+    const doneTimer = justDoneTimersRef.current.get(sessionId);
+    if (doneTimer) clearTimeout(doneTimer);
+    justDoneTimersRef.current.delete(sessionId);
+    busyStartTimeRef.current.delete(sessionId);
+
+    setBusySessions((prev) => { const next = new Set(prev); next.delete(sessionId); return next; });
+    setJustDoneSessions((prev) => { const next = new Set(prev); next.delete(sessionId); return next; });
 
     setSessions((prev) => {
       const remaining = prev.filter((s) => s.id !== sessionId);
@@ -283,7 +304,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
           currentInst.spawned = false;
           term.writeln(
             "\r\n\x1b[33m──────────────────────────────────────\x1b[0m\r\n" +
-            "\x1b[33m  Shell 종료 — 아무 키나 누르면 재시작\x1b[0m\r\n" +
+            `\x1b[33m  ${i18n.t("terminal.shellExited")}\x1b[0m\r\n` +
             "\x1b[33m──────────────────────────────────────\x1b[0m"
           );
           const d = term.onKey(() => {
@@ -302,19 +323,28 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         // Busy indicator — set once when transitioning idle→busy
         if (!busySessionsRef.current.has(sessionId)) {
           busySessionsRef.current.add(sessionId);
-          setSessions((prev) =>
-            prev.map((s) => (s.id === sessionId ? { ...s, busy: true } : s))
-          );
+          busyStartTimeRef.current.set(sessionId, Date.now());
+          setBusySessions((prev) => new Set([...prev, sessionId]));
+          // Clear any lingering "just done" state
+          setJustDoneSessions((prev) => { const next = new Set(prev); next.delete(sessionId); return next; });
+          const dt = justDoneTimersRef.current.get(sessionId);
+          if (dt) { clearTimeout(dt); justDoneTimersRef.current.delete(sessionId); }
         }
         // Reset idle timer
         const existingTimer = busyTimersRef.current.get(sessionId);
         if (existingTimer) clearTimeout(existingTimer);
         const timer = setTimeout(() => {
+          const busyDuration = Date.now() - (busyStartTimeRef.current.get(sessionId) ?? Date.now());
           busyTimersRef.current.delete(sessionId);
           busySessionsRef.current.delete(sessionId);
-          setSessions((prev) =>
-            prev.map((s) => (s.id === sessionId ? { ...s, busy: false } : s))
-          );
+          busyStartTimeRef.current.delete(sessionId);
+          setBusySessions((prev) => { const next = new Set(prev); next.delete(sessionId); return next; });
+          // Only show "just done" indicator if the session was meaningfully busy (≥600ms)
+          // This prevents shell prompts and brief outputs from triggering the done state
+          if (busyDuration >= 600) {
+            // Green dot persists until the user clicks the session tab
+            setJustDoneSessions((prev) => new Set([...prev, sessionId]));
+          }
         }, 1500);
         busyTimersRef.current.set(sessionId, timer);
       };
@@ -338,7 +368,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         })
         .catch((err: unknown) => {
           if (inst) inst.spawned = false;
-          term.writeln(`\r\n\x1b[31m[tybre] 터미널 시작 실패: ${String(err)}\x1b[0m`);
+          term.writeln(`\r\n\x1b[31m[tybre] ${i18n.t("terminal.startFailed")}: ${String(err)}\x1b[0m`);
         });
     });
   }
@@ -350,7 +380,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     if (!el || termInstancesRef.current.has(sessionId)) return;
 
     const theme =
-      useAppStore.getState().resolvedTheme === "ink"
+      useSettingsStore.getState().resolvedTheme === "ink"
         ? TERM_THEME_INK
         : TERM_THEME_PAPER;
 
@@ -411,8 +441,9 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
 
   useEffect(() => {
     sessions.forEach((session) => {
+      const isBusy = busySessions.has(session.id);
       const wasBusy = prevBusyRef.current.get(session.id) ?? false;
-      if (wasBusy && !session.busy) {
+      if (wasBusy && !isBusy) {
         const items = getQueue(session.id);
         if (items.length > 0) {
           const [first, ...rest] = items;
@@ -420,10 +451,10 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
           setTimeout(() => sendText(session.id, first.text + "\r"), 300);
         }
       }
-      prevBusyRef.current.set(session.id, session.busy);
+      prevBusyRef.current.set(session.id, isBusy);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions]);
+  }, [sessions, busySessions]);
 
   // ── Lifecycle effects ────────────────────────────────────────────────────
 
@@ -514,6 +545,18 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     return () => document.removeEventListener("mousedown", onDown);
   }, [settingsOpen]);
 
+  // Global Ctrl+Shift+L to toggle queue panel (works even when xterm isn't focused)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey && e.shiftKey && (e.key === "l" || e.key === "L")) {
+        e.preventDefault();
+        setQueueOpen((o) => !o);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Auto-focus & select text in rename input
   useEffect(() => {
     if (renamingId) {
@@ -521,16 +564,15 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     }
   }, [renamingId]);
 
-  // Auto-expand active session's group + update MRU order
+  // When active session changes, expand that group and collapse all others
   useEffect(() => {
     if (!activeSessionId) return;
     const session = sessionsRef.current.find((s) => s.id === activeSessionId);
     const key = session?.projectPath ?? "__none__";
     setExpandedTermGroups((prev) => {
-      if (prev.has(key)) return prev;
-      return new Set([...prev, key]);
+      if (prev.size === 1 && prev.has(key)) return prev;
+      return new Set([key]);
     });
-    setTermGroupOrder((prev) => [key, ...prev.filter((k) => k !== key)]);
   }, [activeSessionId]);
 
   // ResizeObserver for session tab bar width
@@ -559,6 +601,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     const items = getQueue(activeSessionId);
     if (items.length > 0) {
       setQueueFocusIdx(0);
+      setTimeout(() => queuePanelRef.current?.focus(), 30);
     } else {
       setQueueFocusIdx(-1);
       setTimeout(() => queueInputRef.current?.focus(), 30);
@@ -573,6 +616,8 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
       termInstancesRef.current.clear();
       busyTimersRef.current.forEach((t) => clearTimeout(t));
       busyTimersRef.current.clear();
+      justDoneTimersRef.current.forEach((t) => clearTimeout(t));
+      justDoneTimersRef.current.clear();
     };
   }, []);
 
@@ -597,7 +642,11 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   // ── Session tab click ────────────────────────────────────────────────────
 
   function handleSessionClick(session: TermSession) {
+    const key = session.projectPath ?? "__none__";
+    setLastUsedSessionPerGroup((prev) => ({ ...prev, [key]: session.id }));
     setActiveSessionId(session.id);
+    // Clear the green "done" dot when the user opens/visits this session
+    setJustDoneSessions((prev) => { const next = new Set(prev); next.delete(session.id); return next; });
     // Cross-project switch: notify parent to update the file tree
     if (session.projectPath && session.projectPath !== projectPathRef.current) {
       onProjectChange?.(session.projectPath);
@@ -680,7 +729,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     const text = queueInput.trim();
     if (!text) return;
     const activeSession = sessions.find((s) => s.id === activeSessionId);
-    if (activeSession && !activeSession.busy) {
+    if (activeSession && !busySessions.has(activeSessionId)) {
       sendText(activeSessionId, text + "\r");
     } else {
       enqueue(activeSessionId, text);
@@ -690,31 +739,31 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
 
   // ── Session group layout ──────────────────────────────────────────────────
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const sessionGroups = useMemo<SessionGroup[]>(() => {
     const groupMap = new Map<string, TermSession[]>();
-    for (const session of sessions) {
+    const groupFirstIdx = new Map<string, number>();
+    for (let i = 0; i < sessions.length; i++) {
+      const session = sessions[i];
       const key = session.projectPath ?? "__none__";
-      if (!groupMap.has(key)) groupMap.set(key, []);
+      if (!groupMap.has(key)) {
+        groupMap.set(key, []);
+        groupFirstIdx.set(key, i);
+      }
       groupMap.get(key)!.push(session);
     }
     const keys = [...groupMap.keys()];
+    // Stable creation-order sort — groups never reorder on session switch
     keys.sort((a, b) => {
       if (a === "__none__") return 1;
       if (b === "__none__") return -1;
-      const ai = termGroupOrder.indexOf(a);
-      const bi = termGroupOrder.indexOf(b);
-      if (ai === -1 && bi === -1) return 0;
-      if (ai === -1) return 1;
-      if (bi === -1) return -1;
-      return ai - bi;
+      return (groupFirstIdx.get(a) ?? 0) - (groupFirstIdx.get(b) ?? 0);
     });
     return keys.map((key) => ({
       key,
       projectName: key === "__none__" ? "General" : (key.split("/").pop() ?? key),
       sessions: groupMap.get(key)!,
     }));
-  }, [sessions, termGroupOrder]);
+  }, [sessions]);
 
   const showTermGroupHeaders = sessionGroups.length > 1;
 
@@ -757,39 +806,70 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     >
       {/* ── Session tab bar ───────────────────────────────────────────── */}
       <div
-        className="flex shrink-0 items-stretch border-b border-border overflow-hidden"
+        className="flex shrink-0 items-stretch border-b border-border"
         style={{ height: 32, background: "var(--muted)" }}
       >
         {/* Groups + session tabs */}
         <div ref={sessTabRef} className="flex flex-1 items-stretch overflow-hidden min-w-0">
-          {sessionGroups.map((group) => {
+          {sessionGroups.map((group, groupIdx) => {
             const isExpanded = expandedTermGroups.has(group.key);
+            const hue = SESS_GROUP_HUES[groupIdx % SESS_GROUP_HUES.length];
             const groupVisibleSessions = isExpanded
               ? group.sessions.filter((s) => !overflowSessIds.has(s.id))
               : [];
+            const isGroupBusy = group.sessions.some((s) => busySessions.has(s.id));
+            const isGroupJustDone = !isGroupBusy && group.sessions.some((s) => justDoneSessions.has(s.id));
 
             return (
               <div key={group.key} className="flex items-stretch shrink-0">
                 {/* Group header — only when multiple groups */}
                 {showTermGroupHeaders && (
                   <button
-                    onClick={() =>
-                      setExpandedTermGroups((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(group.key)) next.delete(group.key);
-                        else next.add(group.key);
-                        return next;
-                      })
-                    }
+                    onClick={() => {
+                      if (!isExpanded) {
+                        // Expand this group, collapse all others
+                        setExpandedTermGroups(new Set([group.key]));
+                        // Activate last-used session in this group
+                        const lastId = lastUsedSessionPerGroup[group.key];
+                        const target =
+                          (lastId && group.sessions.find((s) => s.id === lastId)) ??
+                          group.sessions[group.sessions.length - 1];
+                        if (target) {
+                          setLastUsedSessionPerGroup((prev) => ({ ...prev, [group.key]: target.id }));
+                          setActiveSessionId(target.id);
+                          if (target.projectPath && target.projectPath !== projectPathRef.current) {
+                            onProjectChange?.(target.projectPath);
+                          }
+                        }
+                      } else {
+                        setExpandedTermGroups((prev) => {
+                          const next = new Set(prev);
+                          next.delete(group.key);
+                          return next;
+                        });
+                      }
+                    }}
                     title={group.key === "__none__" ? "General" : group.key}
-                    style={{ maxWidth: SESS_GROUP_HEADER_PX }}
-                    className="flex items-center gap-1 px-2 shrink-0 select-none transition-colors border-r-2 border-border hover:bg-muted-foreground/10 text-[11px] font-semibold"
+                    style={{
+                      maxWidth: SESS_GROUP_HEADER_PX,
+                      background: isExpanded
+                        ? `hsl(${hue} 60% 50% / 0.18)`
+                        : `hsl(${hue} 60% 50% / 0.10)`,
+                      borderRight: `2px solid hsl(${hue} 60% 50% / ${isExpanded ? "0.5" : "0.2"})`,
+                    }}
+                    className="flex items-center gap-1 px-2 shrink-0 select-none transition-all text-[11px] font-semibold hover:brightness-110"
                   >
                     {isExpanded
-                      ? <ChevronDown size={10} className="shrink-0 text-muted-foreground" />
-                      : <ChevronRight size={10} className="shrink-0 text-muted-foreground" />
+                      ? <ChevronRight size={10} className="shrink-0 text-muted-foreground" />
+                      : <ChevronLeft size={10} className="shrink-0 text-muted-foreground" />
                     }
                     <span className="truncate text-foreground/70">{group.projectName}</span>
+                    {isGroupBusy && (
+                      <span className="shrink-0 w-2 h-2 rounded-full animate-pulse bg-primary ml-0.5" />
+                    )}
+                    {isGroupJustDone && (
+                      <span className="shrink-0 w-2 h-2 rounded-full bg-green-500 ml-0.5" />
+                    )}
                   </button>
                 )}
 
@@ -797,23 +877,23 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                 {groupVisibleSessions.map((session) => (
                   <div
                     key={session.id}
-                    style={{ maxWidth: Math.floor(sessMaxWidth) }}
+                    style={{
+                      maxWidth: Math.floor(sessMaxWidth),
+                      background: session.id === activeSessionId
+                        ? `hsl(${hue} 60% 50% / 0.15)`
+                        : `hsl(${hue} 60% 50% / 0.05)`,
+                      borderTop: session.id === activeSessionId
+                        ? `2px solid hsl(${hue} 60% 50% / 0.8)`
+                        : "2px solid transparent",
+                    }}
                     className={cn(
-                      "flex items-center gap-1.5 shrink-0 min-w-[60px] px-2 border-r border-border cursor-pointer select-none transition-colors",
+                      "flex items-center gap-1.5 shrink-0 min-w-[60px] px-2 border-r border-border cursor-pointer select-none transition-all",
                       session.id === activeSessionId
-                        ? "bg-background text-foreground"
-                        : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
                     )}
                     onClick={() => handleSessionClick(session)}
                   >
-                    {/* Busy pulse dot */}
-                    {session.busy && (
-                      <span
-                        className="shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
-                        style={{ background: "var(--primary)" }}
-                      />
-                    )}
-
                     {/* Session name — inline rename on double-click */}
                     {renamingId === session.id ? (
                       <input
@@ -841,6 +921,14 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                       </span>
                     )}
 
+                    {/* Busy / done indicator dot — right side */}
+                    {busySessions.has(session.id) && (
+                      <span className="shrink-0 w-2 h-2 rounded-full animate-pulse bg-primary" />
+                    )}
+                    {!busySessions.has(session.id) && justDoneSessions.has(session.id) && (
+                      <span className="shrink-0 w-2 h-2 rounded-full bg-green-500" />
+                    )}
+
                     {/* Close button — only shown when multiple sessions exist */}
                     {sessions.length > 1 && (
                       <button
@@ -849,7 +937,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                           closeSession(session.id);
                         }}
                         className="flex items-center justify-center rounded hover:bg-muted/80 p-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                        title="세션 닫기"
+                        title={t("terminal.closeSession")}
                       >
                         <X size={10} />
                       </button>
@@ -868,7 +956,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
             <div className="relative" ref={sessOverflowRef}>
               <button
                 onClick={() => setSessOverflowOpen((o) => !o)}
-                title={`${overflowSessions.length}개 세션 더 보기`}
+                title={t("terminal.overflowTitle", { count: overflowSessions.length })}
                 className={cn(
                   "flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] font-mono font-medium transition-colors",
                   sessOverflowOpen
@@ -895,10 +983,13 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                         setExpandedTermGroups((prev) => new Set([...prev, key]));
                       }}
                     >
-                      {session.busy && (
-                        <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: "var(--primary)" }} />
-                      )}
                       <span className="font-mono truncate flex-1">{session.name}</span>
+                      {busySessions.has(session.id) && (
+                        <span className="w-2 h-2 rounded-full animate-pulse shrink-0 bg-primary" />
+                      )}
+                      {!busySessions.has(session.id) && justDoneSessions.has(session.id) && (
+                        <span className="w-2 h-2 rounded-full shrink-0 bg-green-500" />
+                      )}
                       {showTermGroupHeaders && session.projectPath && (
                         <span className="text-[10px] text-muted-foreground shrink-0">
                           {session.projectPath.split("/").pop()}
@@ -915,7 +1006,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
           <button
             onClick={() => addSession(projectPathRef.current)}
             className="flex items-center justify-center px-2 text-muted-foreground hover:text-foreground hover:bg-background/60 transition-colors h-full"
-            title="새 터미널 세션"
+            title={t("terminal.newSession")}
           >
             <Plus size={12} />
           </button>
@@ -943,10 +1034,10 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" align="end">
-              <p className="font-semibold mb-1">프롬프트 대기열</p>
+              <p className="font-semibold mb-1">{t("terminal.queue.title")}</p>
               <p className="text-[11px] text-muted-foreground">Ctrl+⇧L</p>
               <p className="text-[11px] text-muted-foreground mt-1">
-                명령을 미리 입력해두면<br />Claude 응답 후 자동 전송
+                {t("terminal.queue.desc")}
               </p>
             </TooltipContent>
           </Tooltip>
@@ -956,11 +1047,10 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         <div className="relative shrink-0 flex items-center px-1" ref={settingsRef}>
           <button
             onClick={() => setSettingsOpen((o) => !o)}
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-            title="터미널 설정"
+            className="flex items-center rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+            title={t("terminal.settings.title")}
           >
             <Settings2 size={12} />
-            <span>설정</span>
           </button>
 
           {settingsOpen && (
@@ -969,7 +1059,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
               role="menu"
             >
               <div className="border-b border-border px-3 py-2">
-                <p className="text-xs font-semibold text-muted-foreground">터미널 설정</p>
+                <p className="text-xs font-semibold text-muted-foreground">{t("terminal.settings.title")}</p>
               </div>
               <div className="p-1.5">
                 <label
@@ -1001,14 +1091,14 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground">
-                      Claude Code 자동 실행
+                      {t("terminal.settings.autoClaude.label")}
                     </p>
                     <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                      프로젝트를 열 때 자동으로{" "}
+                      {t("terminal.settings.autoClaude.descPre")}{" "}
                       <code className="rounded bg-muted px-1 py-px font-mono">
                         claude
                       </code>{" "}
-                      명령을 실행합니다
+                      {t("terminal.settings.autoClaude.descPost")}
                     </p>
                   </div>
                 </label>
@@ -1026,12 +1116,11 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                       onChange={toggleYoloMode}
                       className="w-3 h-3 accent-primary"
                     />
-                    <span>Yolo 모드</span>
+                    <span>{t("terminal.settings.yolo.label")}</span>
                   </label>
                   {autoClaude && (
-                    <p className="text-[10px] text-muted-foreground ml-5 mt-0.5 leading-relaxed">
-                      확인 없이 모든 작업 자동 실행.<br />
-                      위험하지만 빠름.
+                    <p className="text-[10px] text-muted-foreground ml-5 mt-0.5 leading-relaxed whitespace-pre-line">
+                      {t("terminal.settings.yolo.desc")}
                     </p>
                   )}
                 </div>
@@ -1078,7 +1167,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                 className="font-mono text-xs"
                 style={{ color: "var(--muted-foreground)" }}
               >
-                터미널 로딩 중…
+                {t("terminal.loading")}
               </span>
             </div>
           )}
@@ -1112,7 +1201,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
               }}
             >
               <span className="font-mono text-xs font-medium">
-                대기열{" "}
+                {t("terminal.queue.label")}{" "}
                 {getQueue(activeSessionId).length > 0 && (
                   <span className="text-muted-foreground">
                     ({getQueue(activeSessionId).length})
@@ -1169,7 +1258,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
               ))}
               {getQueue(activeSessionId).length === 0 && (
                 <p className="text-center text-xs text-muted-foreground py-6">
-                  대기 항목 없음
+                  {t("terminal.queue.empty")}
                 </p>
               )}
             </div>
@@ -1189,7 +1278,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                 ref={queueInputRef}
                 value={queueInput}
                 onChange={(e) => setQueueInput(e.target.value)}
-                placeholder="명령어… (Enter 전송, Shift+Enter 줄바꿈)"
+                placeholder={t("terminal.queue.placeholder")}
                 rows={2}
                 className="font-mono text-xs resize-none bg-background rounded border border-border p-1.5 outline-none focus:border-primary"
                 onKeyDown={(e) => {
@@ -1206,7 +1295,7 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                 }}
               />
               <p className="text-[10px] text-muted-foreground leading-tight">
-                ↑↓ 이동 · E 수정 · D 삭제
+                {t("terminal.queue.hints")}
               </p>
             </div>
           </div>
@@ -1239,6 +1328,7 @@ function QueueItemRow({
   onFocus, onToggleExpand, onEditChange, onEditCommit, onEditCancel,
   onStartEdit, onDelete,
 }: QueueItemRowProps) {
+  const { t } = useTranslation();
   const editRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -1287,21 +1377,21 @@ function QueueItemRow({
             <button
               onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
               className="px-1 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted"
-              title="펼치기 (Enter)"
+              title={t("terminal.queue.expand")}
             >
               {expanded ? "▲" : "▼"}
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onStartEdit(); }}
               className="px-1 text-[10px] text-muted-foreground hover:text-foreground rounded hover:bg-muted"
-              title="수정 (E)"
+              title={t("terminal.queue.edit")}
             >
               E
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onDelete(); }}
               className="px-1 text-[10px] text-muted-foreground hover:text-destructive rounded hover:bg-muted"
-              title="삭제 (D)"
+              title={t("terminal.queue.delete")}
             >
               ✕
             </button>

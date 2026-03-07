@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -376,6 +377,199 @@ pub fn reveal_in_finder(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ── App config directory (platform-standard) ──────────────────────────────────
+
+fn app_config_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        let dir = Path::new(&home).join("Library/Application Support/Tybre");
+        fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA").ok()?;
+        let dir = Path::new(&appdata).join("Tybre");
+        fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let home = std::env::var("HOME").ok()?;
+        let dir = Path::new(&home).join(".config/Tybre");
+        fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
+}
+
+/// Returns a rough ISO 8601 UTC timestamp without external crates.
+fn iso_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    fn is_leap(y: u64) -> bool { y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) }
+
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let mut days = secs / 86400;
+    let mut y = 1970u64;
+    loop {
+        let diy = if is_leap(y) { 366 } else { 365 };
+        if days < diy { break; }
+        days -= diy;
+        y += 1;
+    }
+    let months: [u64; 12] = [31, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 1u64;
+    for mdays in &months {
+        if days < *mdays { break; }
+        days -= mdays;
+        mo += 1;
+    }
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, days + 1, h, m, s)
+}
+
+// ── Global config ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ShortcutStats {
+    pub used: HashMap<String, u32>,
+    pub mouse: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GlobalConfig {
+    pub language: String,
+    pub theme: String,
+    pub font_size: u8,
+    pub auto_save: bool,
+    pub custom_shortcuts: HashMap<String, String>,
+    pub guide_mode: bool,
+    pub shortcut_stats: ShortcutStats,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        GlobalConfig {
+            language: "en".to_string(),
+            theme: "system".to_string(),
+            font_size: 16,
+            auto_save: true,
+            custom_shortcuts: HashMap::new(),
+            guide_mode: false,
+            shortcut_stats: ShortcutStats::default(),
+        }
+    }
+}
+
+#[command]
+pub fn load_global_config() -> GlobalConfig {
+    let Some(dir) = app_config_dir() else { return GlobalConfig::default() };
+    let Ok(contents) = fs::read_to_string(dir.join("config.json")) else { return GlobalConfig::default() };
+    match serde_json::from_str::<GlobalConfig>(&contents) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("[tybre] config.json parse error: {e} — using defaults");
+            GlobalConfig::default()
+        }
+    }
+}
+
+#[command]
+pub fn save_global_config(config: GlobalConfig) -> Result<(), String> {
+    let Some(dir) = app_config_dir() else { return Err("cannot resolve config dir".into()) };
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    fs::write(dir.join("config.json"), json).map_err(|e| e.to_string())
+}
+
+// ── Recent projects ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RecentProject {
+    pub path: String,
+    pub name: String,
+    pub last_opened: String,
+}
+
+#[command]
+pub fn load_recent_projects() -> Vec<RecentProject> {
+    let Some(dir) = app_config_dir() else { return Vec::new() };
+    let Ok(contents) = fs::read_to_string(dir.join("recent-projects.json")) else { return Vec::new() };
+    serde_json::from_str::<Vec<RecentProject>>(&contents).unwrap_or_default()
+}
+
+#[command]
+pub fn add_recent_project(path: String, name: String) -> Result<(), String> {
+    let Some(dir) = app_config_dir() else { return Err("cannot resolve config dir".into()) };
+    let mut projects = load_recent_projects();
+    projects.retain(|p| p.path != path);
+    projects.insert(0, RecentProject { path, name, last_opened: iso_now() });
+    projects.truncate(20);
+    let json = serde_json::to_string_pretty(&projects).map_err(|e| e.to_string())?;
+    fs::write(dir.join("recent-projects.json"), json).map_err(|e| e.to_string())
+}
+
+// ── Project workspace ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkspaceState {
+    pub sidebar_open: bool,
+    pub sidebar_width: u32,
+    pub memo_open: bool,
+    pub memo_width: u32,
+}
+
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        WorkspaceState { sidebar_open: true, sidebar_width: 240, memo_open: false, memo_width: 280 }
+    }
+}
+
+fn project_tybre_dir(project_path: &str) -> Option<std::path::PathBuf> {
+    let dir = Path::new(project_path).join(".tybre");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+#[command]
+pub fn load_workspace(project_path: String) -> WorkspaceState {
+    let Some(dir) = project_tybre_dir(&project_path) else { return WorkspaceState::default() };
+    let Ok(contents) = fs::read_to_string(dir.join("workspace.json")) else { return WorkspaceState::default() };
+    match serde_json::from_str::<WorkspaceState>(&contents) {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("[tybre] workspace.json parse error: {e} — using defaults");
+            WorkspaceState::default()
+        }
+    }
+}
+
+#[command]
+pub fn save_workspace(project_path: String, workspace: WorkspaceState) -> Result<(), String> {
+    let Some(dir) = project_tybre_dir(&project_path) else { return Err("cannot resolve .tybre dir".into()) };
+    let json = serde_json::to_string_pretty(&workspace).map_err(|e| e.to_string())?;
+    fs::write(dir.join("workspace.json"), json).map_err(|e| e.to_string())
+}
+
+#[command]
+pub fn load_memo(project_path: String) -> String {
+    let Some(dir) = project_tybre_dir(&project_path) else { return String::new() };
+    fs::read_to_string(dir.join("memo.txt")).unwrap_or_default()
+}
+
+#[command]
+pub fn save_memo(project_path: String, content: String) -> Result<(), String> {
+    let Some(dir) = project_tybre_dir(&project_path) else { return Err("cannot resolve .tybre dir".into()) };
+    fs::write(dir.join("memo.txt"), content).map_err(|e| e.to_string())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn build_file_tree(path: &str) -> Result<FileEntry, String> {
     let p = Path::new(path);

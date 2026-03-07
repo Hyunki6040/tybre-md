@@ -16,18 +16,10 @@ export interface FileEntry {
   children?: FileEntry[];
 }
 
+// Theme is exported here so existing imports keep working;
+// settingsStore is the runtime owner of this value.
 export type Theme = "paper" | "ink" | "system";
 export type View = "editor" | "terminal";
-
-export interface ShortcutStats {
-  used: Record<string, number>; // per-shortcut keyboard use counts { "new-tab": 3 }
-  mouse: number;                // total mouse actions where a shortcut existed
-}
-
-export interface GuideHint {
-  shortcut: string;
-  label: string;
-}
 
 interface AppState {
   tabs: Tab[];
@@ -35,13 +27,8 @@ interface AppState {
   closedTabs: Tab[]; // Cmd+Shift+T restore stack (max 10)
   groupOrder: string[]; // MRU order of group keys (projectPath | "__none__")
 
-  sidebarVisible: boolean;
-  sidebarWidth: number;
   fileTree: FileEntry | null; // shared for QuickOpen access
   recentDirs: string[];       // recently opened directories (max 8)
-
-  theme: Theme;
-  resolvedTheme: "paper" | "ink";
 
   view: View;
   quickOpenVisible: boolean;
@@ -49,16 +36,6 @@ interface AppState {
   findBarVisible: boolean;
   projectSearchVisible: boolean;
   exportVisible: boolean;
-  customShortcuts: Record<string, string>; // id -> combo string override
-
-  // Editor settings
-  fontSize: number;       // 14-20px
-  autoSave: boolean;
-
-  // Guide mode
-  guideMode: boolean;
-  shortcutStats: ShortcutStats;
-  guideHint: GuideHint | null;
 
   addTab: (tab: Tab) => void;
   closeTab: (tabId: string) => void;
@@ -67,26 +44,14 @@ interface AppState {
   updateTabContent: (tabId: string, content: string) => void;
   markTabSaved: (tabId: string) => void;
 
-  toggleSidebar: () => void;
   setFileTree: (tree: FileEntry | null) => void;
   addRecentDir: (path: string) => void;
-  setTheme: (theme: Theme) => void;
-  setResolvedTheme: (theme: "paper" | "ink") => void;
   toggleView: () => void;
   setQuickOpenVisible: (visible: boolean) => void;
   setSettingsVisible: (visible: boolean) => void;
   setFindBarVisible: (visible: boolean) => void;
   setProjectSearchVisible: (visible: boolean) => void;
   setExportVisible: (visible: boolean) => void;
-  setCustomShortcut: (id: string, combo: string) => void;
-  resetCustomShortcut: (id: string) => void;
-  setFontSize: (size: number) => void;
-  setAutoSave: (enabled: boolean) => void;
-
-  toggleGuideMode: () => void;
-  recordShortcutUse: (id: string) => void;
-  recordMouseAction: (shortcut: string, label: string) => void;
-  clearGuideHint: () => void;
 
   newFileRequestedAt: number;
   projectLastTab: Record<string, string>;
@@ -118,13 +83,8 @@ export const useAppStore = create<AppState>((set) => ({
   closedTabs: [],
   groupOrder: [],
 
-  sidebarVisible: true,
-  sidebarWidth: 240,
   fileTree: null,
   recentDirs: JSON.parse(localStorage.getItem("tybre:recentDirs") ?? "[]"),
-
-  theme: "system",
-  resolvedTheme: "paper",
 
   view: "editor",
   quickOpenVisible: false,
@@ -132,22 +92,9 @@ export const useAppStore = create<AppState>((set) => ({
   findBarVisible: false,
   projectSearchVisible: false,
   exportVisible: false,
-  customShortcuts: JSON.parse(localStorage.getItem("tybre:customShortcuts") ?? "{}"),
-
-  fontSize: parseInt(localStorage.getItem("tybre:fontSize") ?? "16", 10),
-  autoSave: JSON.parse(localStorage.getItem("tybre:autoSave") ?? "true"),
 
   newFileRequestedAt: 0,
   projectLastTab: JSON.parse(localStorage.getItem("tybre:projectLastTab") ?? "{}"),
-
-  guideMode: JSON.parse(localStorage.getItem("tybre:guideMode") ?? "false"),
-  shortcutStats: (() => {
-    const raw = JSON.parse(localStorage.getItem("tybre:shortcutStats") ?? '{"used":{},"mouse":0}');
-    // Migrate old format where used was a number
-    if (typeof raw.used === "number") return { used: {}, mouse: raw.mouse ?? 0 };
-    return raw;
-  })(),
-  guideHint: null,
 
   addTab: (tab) => {
     set((state) => ({
@@ -215,10 +162,6 @@ export const useAppStore = create<AppState>((set) => ({
     }));
   },
 
-  toggleSidebar: () => {
-    set((state) => ({ sidebarVisible: !state.sidebarVisible }));
-  },
-
   setFileTree: (tree) => {
     set({ fileTree: tree });
   },
@@ -229,22 +172,6 @@ export const useAppStore = create<AppState>((set) => ({
       localStorage.setItem("tybre:recentDirs", JSON.stringify(next));
       return { recentDirs: next };
     });
-  },
-
-  setTheme: (theme) => {
-    set({ theme });
-  },
-
-  setResolvedTheme: (resolvedTheme) => {
-    const root = document.documentElement;
-    if (resolvedTheme === "ink") {
-      root.classList.add("dark");
-      root.classList.remove("light");
-    } else {
-      root.classList.add("light");
-      root.classList.remove("dark");
-    }
-    set({ resolvedTheme });
   },
 
   toggleView: () => {
@@ -265,73 +192,12 @@ export const useAppStore = create<AppState>((set) => ({
   setProjectSearchVisible: (visible) => { set({ projectSearchVisible: visible }); },
   setExportVisible: (visible) => { set({ exportVisible: visible }); },
 
-  setCustomShortcut: (id, combo) => {
-    set((state) => {
-      const next = { ...state.customShortcuts, [id]: combo };
-      localStorage.setItem("tybre:customShortcuts", JSON.stringify(next));
-      return { customShortcuts: next };
-    });
-  },
-
-  resetCustomShortcut: (id) => {
-    set((state) => {
-      const next = { ...state.customShortcuts };
-      delete next[id];
-      localStorage.setItem("tybre:customShortcuts", JSON.stringify(next));
-      return { customShortcuts: next };
-    });
-  },
-
-  setFontSize: (size) => {
-    const clamped = Math.min(20, Math.max(14, size));
-    localStorage.setItem("tybre:fontSize", String(clamped));
-    document.documentElement.style.setProperty("--font-size-base", `${clamped}px`);
-    set({ fontSize: clamped });
-  },
-
-  setAutoSave: (enabled) => {
-    localStorage.setItem("tybre:autoSave", JSON.stringify(enabled));
-    set({ autoSave: enabled });
-  },
-
-  toggleGuideMode: () => {
-    set((state) => {
-      const next = !state.guideMode;
-      localStorage.setItem("tybre:guideMode", JSON.stringify(next));
-      return { guideMode: next };
-    });
-  },
-
-  recordShortcutUse: (id) => {
-    set((state) => {
-      const prev = state.shortcutStats.used ?? {};
-      const stats = {
-        ...state.shortcutStats,
-        used: { ...prev, [id]: (prev[id] ?? 0) + 1 },
-      };
-      localStorage.setItem("tybre:shortcutStats", JSON.stringify(stats));
-      return { shortcutStats: stats };
-    });
-  },
-
-  recordMouseAction: (shortcut, label) => {
-    set((state) => {
-      const stats = { ...state.shortcutStats, mouse: state.shortcutStats.mouse + 1 };
-      localStorage.setItem("tybre:shortcutStats", JSON.stringify(stats));
-      return { shortcutStats: stats, guideHint: { shortcut, label } };
-    });
-  },
-
-  clearGuideHint: () => {
-    set({ guideHint: null });
-  },
-
   requestNewFile: () => set((s) => ({ newFileRequestedAt: s.newFileRequestedAt + 1 })),
 
   setProjectLastTab: (projectPath, filePath) =>
     set((state) => {
       const next = { ...state.projectLastTab, [projectPath]: filePath };
-      localStorage.setItem("tybre:projectLastTab", JSON.stringify(next));
+      localStorage.setItem("tybre:projectLastTab", JSON.stringify(next)); // fallback
       return { projectLastTab: next };
     }),
 

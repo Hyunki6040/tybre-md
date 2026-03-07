@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
   ChevronUp,
   FileText,
+  BookOpen,
   FilePlus,
   FileImage,
   File,
@@ -15,10 +17,12 @@ import {
   X,
 } from "lucide-react";
 import { useAppStore, type FileEntry } from "@/store/appStore";
+import { useWorkspaceStore } from "@/store/workspaceStore";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { useSwitchProject, getOpenProjects, GROUP_HUES, type OpenProject } from "@/hooks/useSwitchProject";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -41,10 +45,14 @@ function collectChildNames(root: FileEntry, dir: string): Set<string> {
 // Sidebar root
 // ─────────────────────────────────────────────────────────────
 export function Sidebar() {
+  const { t } = useTranslation();
+  const { sidebarOpen: sidebarVisible } = useWorkspaceStore();
   const {
-    sidebarVisible, fileTree, setFileTree, addTab,
+    fileTree, setFileTree, addTab,
     recentDirs, addRecentDir, newFileRequestedAt,
+    tabs,
   } = useAppStore();
+  const switchProject = useSwitchProject();
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [claudeDirs, setClaudeDirs] = useState<string[]>([]);
@@ -150,6 +158,11 @@ export function Sidebar() {
     } catch (err) {
       console.error("open_folder failed:", err);
     }
+  }
+
+  async function handleOpenProjectClick(path: string) {
+    await switchProject(path);
+    setExpandedDirs(new Set([path]));
   }
 
   async function browseFolder() {
@@ -414,7 +427,7 @@ export function Sidebar() {
               setCtxMenu(null);
             }}
           >
-            Finder에서 보기
+            {t("sidebar.menu.showInFinder")}
           </button>
           <button
             className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left"
@@ -423,7 +436,7 @@ export function Sidebar() {
               setCtxMenu(null);
             }}
           >
-            경로 복사
+            {t("sidebar.menu.copyPath")}
           </button>
           <div className="my-1 border-t border-border" />
           <button
@@ -447,7 +460,7 @@ export function Sidebar() {
               }, 60);
             }}
           >
-            이름 변경
+            {t("sidebar.menu.rename")}
           </button>
           {ctxMenu.isDir && (
             <button
@@ -458,7 +471,7 @@ export function Sidebar() {
                 handleNewFile(dirPath);
               }}
             >
-              새 파일
+              {t("sidebar.menu.newFile")}
             </button>
           )}
           <div className="my-1 border-t border-border" />
@@ -483,10 +496,17 @@ export function Sidebar() {
               }
             }}
           >
-            삭제
+            {t("sidebar.menu.delete")}
           </button>
         </div>
       )}
+
+      {/* ── Open projects panel ── */}
+      <OpenProjectsPanel
+        projects={getOpenProjects(tabs)}
+        activePath={fileTree?.path ?? null}
+        onSwitch={handleOpenProjectClick}
+      />
 
       {/* ── Bottom: folder dropup ── */}
       <div ref={menuRef} className="relative shrink-0">
@@ -622,6 +642,65 @@ export function Sidebar() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Open projects panel (above folder dropup)
+// ─────────────────────────────────────────────────────────────
+function OpenProjectsPanel({
+  projects,
+  activePath,
+  onSwitch,
+}: {
+  projects: OpenProject[];
+  activePath: string | null;
+  onSwitch: (path: string) => void;
+}) {
+  if (projects.length === 0) return null;
+  return (
+    <div className="shrink-0">
+      <Separator />
+      <div className="px-3 pt-1.5 pb-0.5">
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60 select-none">
+          열린 프로젝트
+        </span>
+      </div>
+      {projects.map((project, idx) => {
+        const hue = GROUP_HUES[idx % GROUP_HUES.length];
+        const isActive = project.path === activePath;
+        return (
+          <button
+            key={project.key}
+            className={cn(
+              "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
+              "hover:bg-accent/50",
+              isActive ? "text-foreground font-medium" : "text-muted-foreground"
+            )}
+            style={{
+              background: isActive
+                ? `hsl(${hue} 55% 52% / 0.1)`
+                : undefined,
+              borderLeft: `2px solid hsl(${hue} 55% 52% / ${isActive ? 0.7 : 0.3})`,
+            }}
+            onClick={() => onSwitch(project.path)}
+            title={project.path}
+          >
+            <FolderOpen
+              className="h-3.5 w-3.5 shrink-0"
+              style={{ color: `hsl(${hue} 55% 45%)` }}
+            />
+            <span className="flex-1 truncate">{project.name}</span>
+            <span
+              className="shrink-0 font-mono text-[9px] opacity-70 select-none"
+              style={{ color: `hsl(${hue} 40% 50%)` }}
+            >
+              ⌃{idx + 1}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Folder list item in the dropup (with search highlight)
 // ─────────────────────────────────────────────────────────────
 function HighlightMatch({ text, query }: { text: string; query: string }) {
@@ -711,7 +790,7 @@ function FileTreeNode({
   selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
   onContextMenu,
 }: FileTreeNodeProps) {
-  const { addTab, setActiveTab, tabs, fileTree } = useAppStore();
+  const { addTab, setActiveTab, tabs, fileTree, activeTabId } = useAppStore();
   const isExpanded = expandedDirs.has(entry.path);
 
   const ext = fileExt(entry.name);
@@ -719,7 +798,7 @@ function FileTreeNode({
   const isImage = IMAGE_EXTS.has(ext);
   const isPdf = ext === "pdf";
   const isOpenable = !entry.is_dir && OPENABLE_EXTS.has(ext);
-  const isActiveFile = tabs.some((t) => t.filePath === entry.path);
+  const isActiveFile = tabs.find((t) => t.id === activeTabId)?.filePath === entry.path;
 
   // Lazy render: children only render after first expansion
   const [hasBeenExpanded, setHasBeenExpanded] = useState(isExpanded);
@@ -758,6 +837,7 @@ function FileTreeNode({
     ? (isExpanded ? FolderOpen : Folder)
     : isImage ? FileImage
     : isPdf ? File
+    : isMarkdown ? BookOpen
     : FileText;
 
   // Props forwarded to child nodes

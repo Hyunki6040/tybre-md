@@ -1,37 +1,39 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { Plus, X, PanelLeft, Keyboard, ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useAppStore, type Tab } from "@/store/appStore";
+import { useSettingsStore } from "@/store/settingsStore";
+import { useWorkspaceStore } from "@/store/workspaceStore";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 // ── All tracked shortcuts ─────────────────────────────────────────────────────
 const ALL_SHORTCUTS = [
-  { id: "new-tab",        key: "⌘T",    label: "새 탭" },
-  { id: "close-tab",      key: "⌘W",    label: "탭 닫기" },
-  { id: "restore-tab",    key: "⌘⇧T",  label: "닫힌 탭 복원" },
-  { id: "tab-switch",     key: "⌘1–9", label: "탭 번호 이동" },
-  { id: "save",           key: "⌘S",    label: "저장" },
-  { id: "quick-open",     key: "⌘P",    label: "빠른 열기" },
-  { id: "sidebar",        key: "⌘\\",  label: "사이드바 토글" },
-  { id: "terminal",       key: "⌘`",    label: "터미널 전환" },
-  { id: "settings",       key: "⌘,",    label: "설정" },
-  { id: "undo",           key: "⌘Z",    label: "실행 취소" },
-  { id: "project-search", key: "⌘⇧F",  label: "전체 검색" },
-  { id: "export",         key: "⌘E",    label: "내보내기" },
-  { id: "slash",          key: "/",       label: "슬래시 명령" },
-  { id: "new-file",          key: "⌘N",      label: "새 파일 만들기" },
-  { id: "find",              key: "⌘F",      label: "찾기" },
-  { id: "new-window",        key: "⌘⇧N",     label: "새 창 열기" },
-  { id: "open-folder",       key: "⌘⇧O",     label: "폴더 열기" },
-  { id: "term-prev-session", key: "Ctrl+[",  label: "이전 터미널 세션" },
-  { id: "term-next-session", key: "Ctrl+]",  label: "다음 터미널 세션" },
-  { id: "term-queue",        key: "Ctrl+⇧L", label: "프롬프트 대기열" },
+  { id: "new-tab",        key: "⌘T",    labelKey: "shortcuts.labels.new-tab" },
+  { id: "close-tab",      key: "⌘W",    labelKey: "shortcuts.labels.close-tab" },
+  { id: "restore-tab",    key: "⌘⇧T",  labelKey: "shortcuts.labels.restore-tab" },
+  { id: "tab-switch",     key: "⌘1–9", labelKey: "shortcuts.labels.tab-switch" },
+  { id: "save",           key: "⌘S",    labelKey: "shortcuts.labels.save" },
+  { id: "quick-open",     key: "⌘P",    labelKey: "shortcuts.labels.quick-open" },
+  { id: "sidebar",        key: "⌘\\",  labelKey: "shortcuts.labels.sidebar" },
+  { id: "terminal",       key: "⌘`",    labelKey: "shortcuts.labels.terminal" },
+  { id: "settings",       key: "⌘,",    labelKey: "shortcuts.labels.settings" },
+  { id: "undo",           key: "⌘Z",    labelKey: "shortcuts.labels.undo" },
+  { id: "project-search", key: "⌘⇧F",  labelKey: "shortcuts.labels.project-search" },
+  { id: "export",         key: "⌘E",    labelKey: "shortcuts.labels.export" },
+  { id: "slash",          key: "/",      labelKey: "shortcuts.labels.slash" },
+  { id: "new-file",          key: "⌘N",      labelKey: "shortcuts.labels.new-file" },
+  { id: "find",              key: "⌘F",      labelKey: "shortcuts.labels.find" },
+  { id: "new-window",        key: "⌘⇧N",     labelKey: "shortcuts.labels.new-window" },
+  { id: "open-folder",       key: "⌘⇧O",     labelKey: "shortcuts.labels.open-folder" },
+  { id: "term-prev-session", key: "Ctrl+[",  labelKey: "shortcuts.labels.term-prev-session" },
+  { id: "term-next-session", key: "Ctrl+]",  labelKey: "shortcuts.labels.term-next-session" },
+  { id: "term-queue",        key: "Ctrl+⇧L", labelKey: "shortcuts.labels.term-queue" },
 ];
 
 // ── Signal bars (4-bar cellular style) ───────────────────────────────────────
@@ -72,7 +74,7 @@ function skillLevel(used: Record<string, number>, mouse: number): 0 | 1 | 2 | 3 
 
 // ── Guide hint toast ──────────────────────────────────────────────────────────
 function GuideHintToast() {
-  const { guideHint, clearGuideHint } = useAppStore();
+  const { guideHint, clearGuideHint } = useSettingsStore();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -110,6 +112,7 @@ function GuidePanel({
   onMouseLeave: () => void;
   shortcutUsed: Record<string, number>;
 }) {
+  const { t } = useTranslation();
   const [usedExpanded, setUsedExpanded] = useState(false);
 
   const unused = ALL_SHORTCUTS.filter((s) => !(shortcutUsed[s.id] > 0));
@@ -130,18 +133,18 @@ function GuidePanel({
     >
       {/* Header */}
       <div className="border-b border-border px-3 py-2">
-        <p className="text-[11px] font-semibold text-foreground">단축키 가이드</p>
+        <p className="text-[11px] font-semibold text-foreground">{t("tabbar.guide.title")}</p>
         <p className="text-[10px] text-muted-foreground mt-0.5">
-          마우스 대신 키보드를 사용해보세요
+          {t("tabbar.guide.subtitle")}
         </p>
       </div>
 
-      <ScrollArea className="max-h-[320px]">
+      <div className="max-h-[320px] overflow-y-auto">
         {/* Unused shortcuts — active, shown at top */}
         <div className="py-1">
           {unused.length === 0 && (
             <p className="px-3 py-2 text-[11px] text-muted-foreground">
-              모든 단축키를 사용해봤어요 🎉
+              {t("tabbar.guide.allUsed")}
             </p>
           )}
           {unused.map((s) => (
@@ -149,7 +152,7 @@ function GuidePanel({
               key={s.id}
               className="flex items-center justify-between px-3 py-1.5 hover:bg-accent/50 transition-colors"
             >
-              <span className="text-[12px] text-foreground">{s.label}</span>
+              <span className="text-[12px] text-foreground">{t(s.labelKey)}</span>
               <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
                 {s.key}
               </kbd>
@@ -169,7 +172,7 @@ function GuidePanel({
                 : <ChevronRight className="h-3 w-3 text-muted-foreground/60" />
               }
               <span className="text-[10px] text-muted-foreground/60">
-                이미 써본 단축키 ({used.length})
+                {t("tabbar.guide.usedLabel", { count: used.length })}
               </span>
             </button>
             {usedExpanded && (
@@ -179,7 +182,7 @@ function GuidePanel({
                     key={s.id}
                     className="flex items-center justify-between px-3 py-1.5"
                   >
-                    <span className="text-[12px] text-muted-foreground/50">{s.label}</span>
+                    <span className="text-[12px] text-muted-foreground/50">{t(s.labelKey)}</span>
                     <kbd className="rounded bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-muted-foreground/50">
                       {s.key}
                     </kbd>
@@ -189,7 +192,7 @@ function GuidePanel({
             )}
           </div>
         )}
-      </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -202,11 +205,17 @@ interface TabGroup {
   tabs: Tab[];
 }
 
-function computeGroups(tabs: Tab[], groupOrder: string[]): TabGroup[] {
+function computeGroups(tabs: Tab[]): TabGroup[] {
   const groupMap = new Map<string, Tab[]>();
-  for (const tab of tabs) {
+  const groupFirstIdx = new Map<string, number>();
+
+  for (let i = 0; i < tabs.length; i++) {
+    const tab = tabs[i];
     const key = tab.projectPath ?? "__none__";
-    if (!groupMap.has(key)) groupMap.set(key, []);
+    if (!groupMap.has(key)) {
+      groupMap.set(key, []);
+      groupFirstIdx.set(key, i);
+    }
     groupMap.get(key)!.push(tab);
   }
 
@@ -214,12 +223,7 @@ function computeGroups(tabs: Tab[], groupOrder: string[]): TabGroup[] {
   keys.sort((a, b) => {
     if (a === "__none__") return 1;
     if (b === "__none__") return -1;
-    const ai = groupOrder.indexOf(a);
-    const bi = groupOrder.indexOf(b);
-    if (ai === -1 && bi === -1) return 0;
-    if (ai === -1) return 1;
-    if (bi === -1) return -1;
-    return ai - bi;
+    return (groupFirstIdx.get(a) ?? 0) - (groupFirstIdx.get(b) ?? 0);
   });
 
   return keys.map((key) => ({
@@ -242,11 +246,13 @@ const OVERFLOW_BTN_PX = 40;
 
 // ── TabBar ────────────────────────────────────────────────────────────────────
 export function TabBar() {
+  const { t } = useTranslation();
   const {
-    tabs, activeTabId, closeTab, setActiveTab, addTab, toggleSidebar, fileTree,
-    sidebarVisible, guideMode, toggleGuideMode, shortcutStats, recordMouseAction,
-    groupOrder, projectLastTab, setProjectLastTab,
+    tabs, activeTabId, closeTab, setActiveTab, addTab, fileTree,
+    projectLastTab, setProjectLastTab, setFileTree, addRecentDir,
   } = useAppStore();
+  const { guideMode, toggleGuideMode, shortcutStats, recordMouseAction } = useSettingsStore();
+  const { toggleSidebar, sidebarOpen: sidebarVisible } = useWorkspaceStore();
 
   const [guidePanelOpen, setGuidePanelOpen] = useState(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -265,6 +271,10 @@ export function TabBar() {
     return new Set([activeTab?.projectPath ?? "__none__"]);
   });
 
+  // Ref to latest tabs — used in effects to avoid adding `tabs` to deps
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
   const level = skillLevel(shortcutStats.used ?? {}, shortcutStats.mouse);
 
   // ResizeObserver
@@ -279,16 +289,19 @@ export function TabBar() {
     return () => ro.disconnect();
   }, []);
 
-  // Auto-expand only the active tab's group, collapse all others
+  // Auto-expand only the active tab's group, collapse all others.
+  // Depends only on activeTabId — not `tabs` — so adding a new tab to a
+  // different group never collapses the currently visible group.
   useEffect(() => {
     if (!activeTabId) return;
-    const tab = tabs.find((t) => t.id === activeTabId);
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
     const key = tab?.projectPath ?? "__none__";
     setExpandedGroups((prev) => {
       if (prev.size === 1 && prev.has(key)) return prev;
       return new Set([key]);
     });
-  }, [activeTabId, tabs]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId]);
 
   // Close overflow dropdown on outside click
   useEffect(() => {
@@ -300,8 +313,8 @@ export function TabBar() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [overflowOpen]);
 
-  // Computed groups
-  const groups = useMemo(() => computeGroups(tabs, groupOrder), [tabs, groupOrder]);
+  // Computed groups — stable creation-order sort, never jumps on tab switch
+  const groups = useMemo(() => computeGroups(tabs), [tabs]);
   const showHeaders = groups.length > 1;
 
   // Layout calculation (two-pass to handle overflow button appearing)
@@ -336,7 +349,7 @@ export function TabBar() {
   }
 
   function handleNewTab() {
-    if (guideMode) recordMouseAction("⌘T", "새 탭");
+    if (guideMode) recordMouseAction("⌘T", t("shortcuts.labels.new-tab"));
     addTab({
       id: `tab-${Date.now()}`,
       filePath: null,
@@ -348,18 +361,30 @@ export function TabBar() {
   }
 
   function handleToggleSidebar() {
-    if (guideMode) recordMouseAction("⌘\\", "사이드바 토글");
+    if (guideMode) recordMouseAction("⌘\\", t("shortcuts.labels.sidebar"));
     toggleSidebar();
+  }
+
+  async function loadProjectForTab(path: string) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const tree = await invoke<import("@/store/appStore").FileEntry>("open_folder", { path });
+      setFileTree(tree);
+      addRecentDir(path);
+    } catch { /* project folder missing — ignore */ }
   }
 
   function handleTabClick(tab: Tab) {
     if (tab.filePath) setProjectLastTab(tab.projectPath ?? "__none__", tab.filePath);
     setActiveTab(tab.id);
+    if (tab.projectPath && tab.projectPath !== fileTree?.path) {
+      loadProjectForTab(tab.projectPath);
+    }
   }
 
   function handleCloseTab(e: React.MouseEvent, tabId: string) {
     e.stopPropagation();
-    if (guideMode) recordMouseAction("⌘W", "탭 닫기");
+    if (guideMode) recordMouseAction("⌘W", t("shortcuts.labels.close-tab"));
     closeTab(tabId);
   }
 
@@ -385,16 +410,20 @@ export function TabBar() {
       if (target) setActiveTab(target.id);
       // Collapse all others, expand only this group
       setExpandedGroups(new Set([key]));
+      // Switch project tree if switching to a different project
+      if (group?.projectPath && group.projectPath !== fileTree?.path) {
+        loadProjectForTab(group.projectPath);
+      }
     }
   }
 
-  const skillLabels = ["단축키 입문자", "조금 활용 중", "절반은 활용!", "능숙한 편", "단축키 마스터"];
+  const skillLabels = t("tabbar.guide.skills", { returnObjects: true }) as string[];
 
   return (
     <>
       <div
         ref={containerRef}
-        className="flex h-[36px] items-stretch border-b border-border bg-muted overflow-hidden"
+        className="flex h-[36px] items-stretch border-b border-border bg-muted"
       >
         {/* Groups + tabs area */}
         <div className="flex flex-1 items-stretch overflow-hidden min-w-0">
@@ -457,7 +486,7 @@ export function TabBar() {
             <div className="relative" ref={overflowRef}>
               <button
                 onClick={() => setOverflowOpen((o) => !o)}
-                title={`${overflowTabs.length}개 탭 더 보기`}
+                title={t("tabbar.overflowTitle", { count: overflowTabs.length })}
                 className={cn(
                   "flex items-center gap-0.5 px-1.5 py-0.5 mx-0.5 rounded text-[11px] font-mono font-medium shrink-0 transition-colors",
                   overflowOpen
@@ -523,7 +552,7 @@ export function TabBar() {
                 onClick={toggleGuideMode}
                 onMouseEnter={() => { if (guideMode) openPanel(); }}
                 onMouseLeave={closePanel}
-                aria-label={guideMode ? "단축키 가이드 켜짐" : "단축키 가이드 꺼짐"}
+                aria-label={guideMode ? t("tabbar.guide.ariaOn") : t("tabbar.guide.ariaOff")}
                 className={cn(
                   "mx-0.5 my-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 transition-colors",
                   guideMode
@@ -538,14 +567,14 @@ export function TabBar() {
             <TooltipContent side="bottom" className="max-w-[200px] text-center">
               {guideMode ? (
                 <>
-                  <div className="font-medium">단축키 가이드 ON</div>
+                  <div className="font-medium">{t("tabbar.guide.on")}</div>
                   <div className="text-[11px] text-muted-foreground">{skillLabels[level]}</div>
-                  <div className="mt-1 text-[10px] text-muted-foreground/70">hover → 단축키 목록 / click → 끄기</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground/70">{t("tabbar.guide.onHint")}</div>
                 </>
               ) : (
                 <>
-                  <div className="font-medium">단축키 가이드</div>
-                  <div className="text-[11px] text-muted-foreground">click → 켜기</div>
+                  <div className="font-medium">{t("tabbar.guide.offTitle")}</div>
+                  <div className="text-[11px] text-muted-foreground">{t("tabbar.guide.offHint")}</div>
                 </>
               )}
             </TooltipContent>
@@ -599,13 +628,18 @@ interface TabItemProps {
 }
 
 function TabItem({ tab, isActive, maxWidth, groupHue, onClick, onClose, onMiddleClick }: TabItemProps) {
-  const activeStyle = isActive && groupHue !== undefined
+  const tabStyle = isActive && groupHue !== undefined
     ? {
         background: `hsl(${groupHue} 60% 50% / 0.13)`,
         borderTop: `2px solid hsl(${groupHue} 60% 50% / 0.8)`,
       }
     : isActive
     ? { borderTop: "2px solid hsl(var(--primary))" }
+    : groupHue !== undefined
+    ? {
+        background: `hsl(${groupHue} 60% 50% / 0.05)`,
+        borderTop: "2px solid transparent",
+      }
     : {};
 
   return (
@@ -615,12 +649,12 @@ function TabItem({ tab, isActive, maxWidth, groupHue, onClick, onClose, onMiddle
       onClick={onClick}
       onAuxClick={onMiddleClick}
       title={tab.filePath ?? tab.title}
-      style={{ maxWidth, ...activeStyle }}
+      style={{ maxWidth, ...tabStyle }}
       className={cn(
         "group relative flex h-full min-w-[72px] shrink-0 cursor-pointer items-center gap-1.5 border-r border-border px-3 text-sm transition-all select-none",
         isActive
-          ? "bg-background text-foreground shadow-sm"
-          : "text-muted-foreground/70 hover:bg-background/50 hover:text-foreground"
+          ? "text-foreground shadow-sm"
+          : "text-muted-foreground/70 hover:text-foreground"
       )}
     >
       {tab.isDirty && (
