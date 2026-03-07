@@ -40,32 +40,37 @@ function defaultWorkspace(): WorkspaceData {
   };
 }
 
-// ── Debounced file save ───────────────────────────────────────────────────────
+// ── Save helpers ──────────────────────────────────────────────────────────────
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+function buildPayload(s: WorkspaceData) {
+  return {
+    sidebar_open: s.sidebarOpen,
+    sidebar_width: s.sidebarWidth,
+    memo_open: s.memoOpen,
+    memo_width: s.memoWidth,
+    term_auto_claude: s.termAutoClaude,
+    term_yolo_mode: s.termYoloMode,
+    terminal_open: s.terminalOpen,
+  };
+}
+
+async function persistWorkspace(projectPath: string, data: WorkspaceData) {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_workspace", { projectPath, workspace: buildPayload(data) });
+  } catch {
+    // browser dev mode — silent
+  }
+}
+
 function schedSave(getState: () => WorkspaceState) {
   if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    const { projectPath, sidebarOpen, sidebarWidth, memoOpen, memoWidth, termAutoClaude, termYoloMode, terminalOpen } = getState();
-    if (!projectPath) return;
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("save_workspace", {
-        projectPath,
-        workspace: {
-          sidebar_open: sidebarOpen,
-          sidebar_width: sidebarWidth,
-          memo_open: memoOpen,
-          memo_width: memoWidth,
-          term_auto_claude: termAutoClaude,
-          term_yolo_mode: termYoloMode,
-          terminal_open: terminalOpen,
-        },
-      });
-    } catch {
-      // browser dev mode — silent
-    }
+  saveTimer = setTimeout(() => {
+    const s = getState();
+    if (!s.projectPath) return;
+    persistWorkspace(s.projectPath, s);
   }, 500);
 }
 
@@ -75,7 +80,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   ...defaultWorkspace(),
   projectPath: null,
 
-  loadWorkspace: async (projectPath) => {
+  loadWorkspace: async (newProjectPath) => {
+    const current = get();
+
+    // Flush any pending debounce save for the *current* project before switching,
+    // so its state is not lost or written to the wrong project.
+    if (saveTimer && current.projectPath && current.projectPath !== newProjectPath) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      await persistWorkspace(current.projectPath, current);
+    }
+
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const ws = await invoke<{
@@ -86,9 +101,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         term_auto_claude: boolean;
         term_yolo_mode: boolean;
         terminal_open: boolean;
-      }>("load_workspace", { projectPath });
+      }>("load_workspace", { projectPath: newProjectPath });
       set({
-        projectPath,
+        projectPath: newProjectPath,
         sidebarOpen: ws.sidebar_open,
         sidebarWidth: ws.sidebar_width,
         memoOpen: ws.memo_open,
@@ -98,7 +113,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         terminalOpen: ws.terminal_open,
       });
     } catch {
-      set({ projectPath, ...defaultWorkspace() });
+      set({ projectPath: newProjectPath, ...defaultWorkspace() });
     }
   },
 
