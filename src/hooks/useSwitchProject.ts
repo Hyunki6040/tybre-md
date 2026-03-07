@@ -48,14 +48,17 @@ export function useSwitchProject() {
         }
       }
 
-      // 2. Load new project tree + workspace (terminal/sidebar state per project)
+      // 2. Load new project tree + workspace in parallel so setFileTree fires
+      //    only after workspace state (terminalOpen etc.) is already updated,
+      //    preventing spurious terminal tab creation in TerminalView Effect #2.
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const tree = await invoke<FileEntry>("open_folder", { path });
+        const [tree] = await Promise.all([
+          invoke<FileEntry>("open_folder", { path }),
+          loadWorkspace(path), // flushes previous project's save before overwriting state
+        ]);
         setFileTree(tree);
         addRecentDir(path);
-        // loadWorkspace flushes the previous project's save before overwriting state
-        await loadWorkspace(path);
 
         // 3. Restore last tab for new project
         const { projectLastTab, tabs } = useAppStore.getState();

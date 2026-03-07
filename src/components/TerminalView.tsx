@@ -77,6 +77,8 @@ interface TerminalViewProps {
   visible: boolean;
   projectPath: string | null;
   onProjectChange?: (path: string) => void;
+  /** Set by parent to receive a function that focuses the active terminal session */
+  focusRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 interface QueueItem {
@@ -100,6 +102,13 @@ const SESS_MAX_PX = 120;
 const SESS_TOOLS_BASE_PX = 96; // + button + queue + settings
 const SESS_OVERFLOW_BTN_PX = 36;
 
+// ── Session registry — lets external code read current session names for saving ──
+const _sessionRegistry = new Map<string, string[]>(); // projectPath → session names
+
+export function getTerminalSessionNames(projectPath: string): string[] {
+  return _sessionRegistry.get(projectPath) ?? [];
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function genId(): string {
@@ -118,7 +127,7 @@ function termFitDims(fit: FitAddon): { cols: number; rows: number } {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function TerminalView({ visible, projectPath, onProjectChange }: TerminalViewProps) {
+export function TerminalView({ visible, projectPath, onProjectChange, focusRef }: TerminalViewProps) {
   const { t } = useTranslation();
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
 
@@ -141,6 +150,10 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   const busySessionsRef = useRef<Set<string>>(new Set());
   // Tracks when each session became busy — used to filter out brief shell-prompt outputs
   const busyStartTimeRef = useRef<Map<string, number>>(new Map());
+  // Delayed busy indicator: fire after 1200ms of sustained data to avoid false positives
+  const pendingBusyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Timestamp of the most recent PTY data chunk per session
+  const lastDataTimeRef = useRef<Map<string, number>>(new Map());
 
   // Separate state sets for busy / just-done indicators (independent of sessions array)
   const [busySessions, setBusySessions] = useState<Set<string>>(new Set());
@@ -166,6 +179,8 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     termYoloMode: yoloMode,
     setTermAutoClaude,
     setTermYoloMode,
+    consumePendingTerminalSessionNames,
+    projectPath: wsProjectPath,
   } = useWorkspaceStore();
   const autoClaudeRef = useRef(autoClaude);
   const yoloModeRef = useRef(yoloMode);
@@ -244,6 +259,11 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     if (timer) clearTimeout(timer);
     busyTimersRef.current.delete(sessionId);
     busySessionsRef.current.delete(sessionId);
+
+    const pendingTimer = pendingBusyTimersRef.current.get(sessionId);
+    if (pendingTimer) clearTimeout(pendingTimer);
+    pendingBusyTimersRef.current.delete(sessionId);
+    lastDataTimeRef.current.delete(sessionId);
 
     const doneTimer = justDoneTimersRef.current.get(sessionId);
     if (doneTimer) clearTimeout(doneTimer);
@@ -325,29 +345,48 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         term.write(bytes);
 
-        // Busy indicator — set once when transitioning idle→busy
-        if (!busySessionsRef.current.has(sessionId)) {
-          busySessionsRef.current.add(sessionId);
-          busyStartTimeRef.current.set(sessionId, Date.now());
-          setBusySessions((prev) => new Set([...prev, sessionId]));
-          // Clear any lingering "just done" state
+        const now = Date.now();
+        lastDataTimeRef.current.set(sessionId, now);
+
+        // Record burst start time on first data; also clear stale "just done" state
+        if (!busyStartTimeRef.current.has(sessionId)) {
+          busyStartTimeRef.current.set(sessionId, now);
           setJustDoneSessions((prev) => { const next = new Set(prev); next.delete(sessionId); return next; });
           const dt = justDoneTimersRef.current.get(sessionId);
           if (dt) { clearTimeout(dt); justDoneTimersRef.current.delete(sessionId); }
         }
+
+        // Schedule blue-dot only after 1200ms of sustained output.
+        // At that point, we verify data is still flowing (lastDataTime < 200ms ago).
+        // This prevents Claude Code's TUI refresh from triggering false busy state.
+        if (!busySessionsRef.current.has(sessionId) && !pendingBusyTimersRef.current.has(sessionId)) {
+          const pendingTimer = setTimeout(() => {
+            pendingBusyTimersRef.current.delete(sessionId);
+            const lastData = lastDataTimeRef.current.get(sessionId) ?? 0;
+            if (Date.now() - lastData < 200 && busyTimersRef.current.has(sessionId)) {
+              busySessionsRef.current.add(sessionId);
+              setBusySessions((prev) => new Set([...prev, sessionId]));
+            }
+          }, 1200);
+          pendingBusyTimersRef.current.set(sessionId, pendingTimer);
+        }
+
         // Reset idle timer
         const existingTimer = busyTimersRef.current.get(sessionId);
         if (existingTimer) clearTimeout(existingTimer);
         const timer = setTimeout(() => {
           const busyDuration = Date.now() - (busyStartTimeRef.current.get(sessionId) ?? Date.now());
           busyTimersRef.current.delete(sessionId);
-          busySessionsRef.current.delete(sessionId);
           busyStartTimeRef.current.delete(sessionId);
+          lastDataTimeRef.current.delete(sessionId);
+          // Cancel pending busy timer if idle fires before it
+          const pendingTimer = pendingBusyTimersRef.current.get(sessionId);
+          if (pendingTimer) { clearTimeout(pendingTimer); pendingBusyTimersRef.current.delete(sessionId); }
+          const wasShowingBusy = busySessionsRef.current.has(sessionId);
+          busySessionsRef.current.delete(sessionId);
           setBusySessions((prev) => { const next = new Set(prev); next.delete(sessionId); return next; });
-          // Only show "just done" indicator if the session was meaningfully busy (≥600ms)
-          // This prevents shell prompts and brief outputs from triggering the done state
-          if (busyDuration >= 600) {
-            // Green dot persists until the user clicks the session tab
+          // Green dot only if we actually showed the blue dot AND total duration was meaningful
+          if (wasShowingBusy && busyDuration >= 600) {
             setJustDoneSessions((prev) => new Set([...prev, sessionId]));
           }
         }, 1500);
@@ -426,6 +465,19 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
         setQueueOpen((o) => !o);
         return false;
       }
+      // Cmd/Ctrl+T → 새 터미널 세션 (에디터 탭/QuickOpen 대신)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "t" || e.key === "T")) {
+        e.stopPropagation();
+        addSession(projectPathRef.current);
+        return false;
+      }
+      // Cmd/Ctrl+W → 현재 터미널 세션 닫기 (에디터 탭 닫기 대신)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "w" || e.key === "W")) {
+        e.stopPropagation();
+        const sid = activeSessionIdRef.current;
+        if (sid) closeSession(sid);
+        return false;
+      }
       return true;
     });
 
@@ -464,13 +516,30 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   // ── Lifecycle effects ────────────────────────────────────────────────────
 
   // Create the first session when the terminal becomes visible (or when
-  // all sessions have been manually closed).
+  // all sessions have been manually closed). Restores saved session names if available.
   useEffect(() => {
     if (!visible) return;
     if (sessionsRef.current.length === 0) {
-      prevProjectRef.current = projectPathRef.current;
-      addSession(projectPathRef.current);
+      // Only attempt restore if the workspace project matches (avoids stale data)
+      const pendingNames =
+        wsProjectPath === projectPathRef.current
+          ? consumePendingTerminalSessionNames()
+          : [];
+
+      if (pendingNames.length > 0) {
+        const newSessions = pendingNames.map((name) => ({
+          id: genId(),
+          name,
+          projectPath: projectPathRef.current,
+        }));
+        setSessions(newSessions);
+        setActiveSessionId(newSessions[0].id);
+      } else {
+        prevProjectRef.current = projectPathRef.current;
+        addSession(projectPathRef.current);
+      }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, sessions.length, addSession]);
 
   // Init xterm for a new active session, or refit an existing one.
@@ -508,11 +577,12 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
     if (!visible || sessionsRef.current.length === 0) return;
 
     const existing = sessionsRef.current.find((s) => s.projectPath === projectPath);
-    if (!existing) {
-      addSession(projectPath);
-    } else {
+    if (existing) {
       setActiveSessionId(existing.id);
+      setJustDoneSessions((prev) => { const next = new Set(prev); next.delete(existing.id); return next; });
     }
+    // No existing session → do nothing. A new session is created only when the
+    // user explicitly opens the terminal for this project (via toggle or onOpen).
   }, [projectPath, visible, sessions, addSession]);
 
   // Sync xterm colour palette when app theme changes
@@ -614,6 +684,38 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queueOpen, activeSessionId]);
 
+  // Expose focusActiveSession to parent via focusRef
+  useEffect(() => {
+    if (!focusRef) return;
+    focusRef.current = () => {
+      const id = activeSessionIdRef.current;
+      if (id) termInstancesRef.current.get(id)?.term.focus();
+    };
+    return () => { if (focusRef) focusRef.current = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRef]);
+
+  // Sync current project's sessions to the module-level registry (used by Sidebar close handler)
+  useEffect(() => {
+    if (!projectPath) return;
+    const names = sessions
+      .filter((s) => s.projectPath === projectPath)
+      .map((s) => s.name);
+    _sessionRegistry.set(projectPath, names);
+  }, [sessions, projectPath]);
+
+  // Watch for "close all sessions for project" signal from appStore
+  const closeTerminalSignal = useAppStore((s) => s.closeTerminalSignal);
+  const closeTerminalProjectPath = useAppStore((s) => s.closeTerminalProjectPath);
+  useEffect(() => {
+    if (!closeTerminalSignal || !closeTerminalProjectPath) return;
+    const toClose = sessionsRef.current.filter(
+      (s) => s.projectPath === closeTerminalProjectPath
+    );
+    toClose.forEach((s) => closeSession(s.id));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeTerminalSignal]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -621,6 +723,9 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
       termInstancesRef.current.clear();
       busyTimersRef.current.forEach((t) => clearTimeout(t));
       busyTimersRef.current.clear();
+      pendingBusyTimersRef.current.forEach((t) => clearTimeout(t));
+      pendingBusyTimersRef.current.clear();
+      lastDataTimeRef.current.clear();
       justDoneTimersRef.current.forEach((t) => clearTimeout(t));
       justDoneTimersRef.current.clear();
     };
@@ -838,6 +943,12 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
                         if (target) {
                           setLastUsedSessionPerGroup((prev) => ({ ...prev, [group.key]: target.id }));
                           setActiveSessionId(target.id);
+                          // Clear green dot for all sessions in this group
+                          setJustDoneSessions((prev) => {
+                            const next = new Set(prev);
+                            group.sessions.forEach((s) => next.delete(s.id));
+                            return next;
+                          });
                           if (target.projectPath && target.projectPath !== projectPathRef.current) {
                             onProjectChange?.(target.projectPath);
                           }
@@ -1134,7 +1245,14 @@ export function TerminalView({ visible, projectPath, onProjectChange }: Terminal
       {/* ── Terminal canvases + Queue panel (side by side) ────────────── */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         {/* xterm canvases — all in DOM, display toggled */}
-        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        <div
+          style={{ flex: 1, position: "relative", overflow: "hidden" }}
+          onClick={() => {
+            if (activeSessionId) {
+              setJustDoneSessions((prev) => { const next = new Set(prev); next.delete(activeSessionId); return next; });
+            }
+          }}
+        >
           {sessions.map((session) => (
             <div
               key={session.id}
