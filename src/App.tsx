@@ -15,7 +15,7 @@ import { SHORTCUT_DEFS, matchesCombo } from "@/lib/shortcuts";
 import { StatusBar } from "@/components/StatusBar";
 import { MilkdownEditor } from "@/editor/MilkdownEditor";
 import { CodeEditor } from "@/editor/CodeEditor";
-import { TerminalView } from "@/components/TerminalView";
+import { TerminalView, clearTerminalSessionRegistry } from "@/components/TerminalView";
 import { LanguageModal } from "@/components/LanguageModal";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -80,6 +80,7 @@ export default function App() {
     activeTabId,
     updateTabContent,
     markTabSaved,
+    reloadTabFromDisk,
     restoreLastTab,
     setActiveTab,
     setQuickOpenVisible,
@@ -106,7 +107,7 @@ export default function App() {
     loadSettings,
   } = useSettingsStore();
 
-  const { toggleSidebar, loadWorkspace, terminalOpen, toggleTerminal, setTerminalOpen } = useWorkspaceStore();
+  const { toggleSidebar, loadWorkspace, terminalOpen, toggleTerminal, setTerminalOpen, setTerminalWidth } = useWorkspaceStore();
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const switchProject = useSwitchProject();
@@ -192,15 +193,25 @@ export default function App() {
   // Terminal focus ref — TerminalView registers its focus function here
   const terminalFocusRef = useRef<(() => void) | null>(null);
 
+  // Per-tab editor state cache (preserves undo history across tab switches)
+  const tabEditorStatesRef = useRef<Map<string, import("prosemirror-state").EditorState>>(new Map());
+
+  // External file change apply callback (avoids remount, keeps undo history)
+  const applyExternalRef = useRef<((content: string) => void) | null>(null);
+
   // ── Apply persisted font size on mount ───────────────────────────────────
   useEffect(() => {
     document.documentElement.style.setProperty("--font-size-base", `${fontSize}px`);
   }, [fontSize]);
 
+  // Track paths we just wrote ourselves so watcher events from our own saves are ignored
+  const recentlySavedRef = useRef<Map<string, number>>(new Map());
+
   // ── File watcher: auto-reload open tabs when external tools change files ────
   useEffect(() => {
     if (!fileTree) return;
 
+    let cancelled = false;
     let unlisten: (() => void) | null = null;
 
     async function setup() {
@@ -209,9 +220,20 @@ export default function App() {
 
       invoke("start_watching", { path: fileTree!.path }).catch(console.error);
 
-      unlisten = await listen<string>("file-changed", async (event) => {
+      const unlistenFn = await listen<string>("file-changed", async (event) => {
         const changedPath = event.payload;
-        const { tabs } = useAppStore.getState();
+
+        // Skip if we saved this file ourselves within the last 2s
+        const savedAt = recentlySavedRef.current.get(changedPath);
+        if (savedAt && Date.now() - savedAt < 2000) return;
+
+        // Prune stale entries (older than 5s) to prevent unbounded growth
+        const now = Date.now();
+        for (const [path, ts] of recentlySavedRef.current) {
+          if (now - ts > 5000) recentlySavedRef.current.delete(path);
+        }
+
+        const { tabs, activeTabId } = useAppStore.getState();
         const tab = tabs.find((t) => t.filePath === changedPath);
         // Don't overwrite unsaved user edits or binary files
         if (!tab || tab.isDirty) return;
@@ -220,18 +242,25 @@ export default function App() {
 
         try {
           const content = await invoke<string>("read_file", { path: changedPath });
-          useAppStore.setState((s) => ({
-            tabs: s.tabs.map((t) =>
-              t.id === tab.id ? { ...t, content } : t
-            ),
-          }));
+          // For the active markdown tab, apply via transaction (preserves undo history)
+          if (tab.id === activeTabId && ext === "md" && applyExternalRef.current) {
+            applyExternalRef.current(content);
+            // Also update the store content so isDirty tracking stays accurate
+            reloadTabFromDisk(tab.id, content);
+          } else {
+            reloadTabFromDisk(tab.id, content);
+          }
         } catch { /* file briefly locked during write, skip */ }
       });
+      // If cleanup ran before this resolved, immediately unsubscribe
+      if (cancelled) unlistenFn();
+      else unlisten = unlistenFn;
     }
 
     setup().catch(console.error);
 
     return () => {
+      cancelled = true;
       unlisten?.();
       import("@tauri-apps/api/core")
         .then(({ invoke }) => invoke("stop_watching").catch(() => {}))
@@ -255,6 +284,41 @@ export default function App() {
 
       try {
         const { invoke } = await import("@tauri-apps/api/core");
+
+        // Check if the app was launched by opening a .md file (file association / double-click)
+        const startupPath = await invoke<string | null>("get_startup_file").catch(() => null);
+        if (startupPath) {
+          const content = await invoke<string>("read_file", { path: startupPath }).catch(() => null);
+          if (content !== null) {
+            const parentDir = startupPath.includes("/")
+              ? startupPath.substring(0, startupPath.lastIndexOf("/"))
+              : startupPath.substring(0, startupPath.lastIndexOf("\\"));
+            try {
+              const tree = await invoke<import("@/store/appStore").FileEntry>("open_folder", { path: parentDir });
+              setFileTree(tree);
+              addRecentDir(parentDir);
+              invoke("add_recent_project", {
+                path: parentDir,
+                name: parentDir.split("/").pop() ?? parentDir,
+              }).catch(console.error);
+            } catch { /* ignore */ }
+            const tabId = `tab-startup-${Date.now()}`;
+            useAppStore.setState({
+              tabs: [{
+                id: tabId,
+                filePath: startupPath,
+                projectPath: parentDir,
+                title: startupPath.split("/").pop() ?? startupPath,
+                content,
+                isDirty: false,
+                externalVersion: 0,
+              }],
+              activeTabId: tabId,
+              closedTabs: [],
+            });
+            return; // skip normal session restore
+          }
+        }
 
         // Load last session: list of open project paths + which was active
         const lastSession = await invoke<{
@@ -288,6 +352,7 @@ export default function App() {
                     title: filePath.split("/").pop() ?? filePath,
                     content,
                     isDirty: false,
+                    externalVersion: 0,
                   } as Tab;
                 } catch {
                   return null; // file deleted — skip
@@ -410,6 +475,55 @@ export default function App() {
     };
   }, []);
 
+  // ── File association: handle "open with Tybre.md" when app is already running ──
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<string[]>("open-files", async (event) => {
+        const [filePath] = event.payload;
+        if (!filePath) return;
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const { tabs, addTab, setActiveTab } = useAppStore.getState();
+          // If already open in a tab, just focus it
+          const existing = tabs.find((t) => t.filePath === filePath);
+          if (existing) {
+            setActiveTab(existing.id);
+            return;
+          }
+          const content = await invoke<string>("read_file", { path: filePath });
+          const parentDir = filePath.includes("/")
+            ? filePath.substring(0, filePath.lastIndexOf("/"))
+            : filePath.substring(0, filePath.lastIndexOf("\\"));
+          // Open parent dir if no project is loaded yet
+          if (!useAppStore.getState().fileTree) {
+            try {
+              const tree = await invoke<import("@/store/appStore").FileEntry>("open_folder", { path: parentDir });
+              setFileTree(tree);
+              addRecentDir(parentDir);
+              invoke("add_recent_project", {
+                path: parentDir,
+                name: parentDir.split("/").pop() ?? parentDir,
+              }).catch(console.error);
+            } catch { /* ignore */ }
+          }
+          addTab({
+            id: `tab-open-${Date.now()}`,
+            filePath,
+            projectPath: parentDir,
+            title: filePath.split("/").pop() ?? filePath,
+            content,
+            isDirty: false,
+            externalVersion: 0,
+          });
+        } catch (err) {
+          console.error("Failed to open file from open-files event:", err);
+        }
+      }).then((fn) => { unlisten = fn; });
+    });
+    return () => { unlisten?.(); };
+  }, []);
+
   // ── Theme resolution ──────────────────────────────────────────────────────
   useEffect(() => {
     function resolveTheme() {
@@ -461,11 +575,20 @@ export default function App() {
         toggleSidebar();
         return;
       }
-      // Terminal toggle
+      // Terminal toggle — auto-focus terminal when opening, editor when closing
       if (matches("terminal", e)) {
         e.preventDefault();
         if (guideMode) recordShortcutUse("terminal");
+        const nextOpen = !terminalOpen;
         toggleTerminal();
+        if (nextOpen) {
+          setTimeout(() => terminalFocusRef.current?.(), 150);
+        } else {
+          const editorEl =
+            (document.querySelector(".ProseMirror") as HTMLElement | null) ??
+            (document.querySelector(".cm-content") as HTMLElement | null);
+          editorEl?.focus();
+        }
         return;
       }
       // Ctrl+N — new file (if project open) or new tab
@@ -477,7 +600,7 @@ export default function App() {
         } else {
           const { fileTree: ft } = useAppStore.getState();
           useAppStore.getState().addTab({
-            id: `tab-${Date.now()}`, filePath: null, projectPath: ft?.path ?? null, title: "Untitled", content: "", isDirty: false,
+            id: `tab-${Date.now()}`, filePath: null, projectPath: ft?.path ?? null, title: "Untitled", content: "", isDirty: false, externalVersion: 0,
           });
         }
         return;
@@ -491,13 +614,14 @@ export default function App() {
           setQuickOpenVisible(true);
         } else {
           useAppStore.getState().addTab({
-            id: `tab-${Date.now()}`, filePath: null, projectPath: null, title: "Untitled", content: "", isDirty: false,
+            id: `tab-${Date.now()}`, filePath: null, projectPath: null, title: "Untitled", content: "", isDirty: false, externalVersion: 0,
           });
         }
         return;
       }
-      // Close tab
+      // Close tab — skip if focus is inside the terminal area (terminal handles its own Ctrl/Cmd+W)
       if (matches("close-tab", e)) {
+        if (document.activeElement?.closest(".terminal-view-container")) return;
         e.preventDefault();
         if (guideMode) recordShortcutUse("close-tab");
         const { activeTabId } = useAppStore.getState();
@@ -525,8 +649,9 @@ export default function App() {
         saveActiveTab();
         return;
       }
-      // Find in document
+      // Find in document — skip if focus is in terminal (let terminal handle ctrl+f)
       if (matches("find", e)) {
+        if (document.activeElement?.closest(".terminal-view-container")) return;
         e.preventDefault();
         if (guideMode) recordShortcutUse("find");
         setFindBarVisible(!findBarVisible);
@@ -613,7 +738,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [toggleSidebar, toggleTerminal, setTerminalOpen, terminalOpen,
+    [toggleSidebar, toggleTerminal, setTerminalOpen, setTerminalWidth, terminalOpen,
      restoreLastTab, setActiveTab, setQuickOpenVisible,
      setSettingsVisible, setFindBarVisible, setProjectSearchVisible, setExportVisible,
      guideMode, recordShortcutUse, customShortcuts, switchProject, setFontSize]
@@ -623,6 +748,21 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // Prevent macOS native ⌘W from closing the window when focus is inside the
+  // terminal. Must use capture=true so this fires before xterm's internal handlers
+  // and before the native WKWebView window-close shortcut is processed.
+  useEffect(() => {
+    function interceptTerminalClose(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "w" || e.key === "W")) {
+        if (document.activeElement?.closest(".terminal-view-container")) {
+          e.preventDefault();
+        }
+      }
+    }
+    window.addEventListener("keydown", interceptTerminalClose, true);
+    return () => window.removeEventListener("keydown", interceptTerminalClose, true);
+  }, []);
 
   // ── Save helper ───────────────────────────────────────────────────────────
   function saveActiveTab() {
@@ -654,6 +794,7 @@ export default function App() {
       return;
     }
 
+    if (tab.filePath) recentlySavedRef.current.set(tab.filePath, Date.now());
     import("@tauri-apps/api/core")
       .then(({ invoke }) =>
         invoke("write_file", { path: tab.filePath, content: tab.content })
@@ -677,6 +818,7 @@ export default function App() {
       const ext = getFileExt(tab.filePath);
       if (ext !== "md" && ext !== "txt" && !CODE_EXTS.has(ext)) return;
 
+      recentlySavedRef.current.set(tab.filePath!, Date.now());
       import("@tauri-apps/api/core")
         .then(({ invoke }) =>
           invoke("write_file", { path: tab.filePath!, content: markdown })
@@ -691,6 +833,21 @@ export default function App() {
     return () => {
       if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
     };
+  }, []);
+
+  // Purge EditorState cache for tabs no longer in `tabs` or `closedTabs`
+  useEffect(() => {
+    const unsub = useAppStore.subscribe((s) => {
+      if (tabEditorStatesRef.current.size === 0) return;
+      const live = new Set([
+        ...s.tabs.map((t) => t.id),
+        ...s.closedTabs.map((t) => t.id),
+      ]);
+      for (const id of tabEditorStatesRef.current.keys()) {
+        if (!live.has(id)) tabEditorStatesRef.current.delete(id);
+      }
+    });
+    return unsub;
   }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -803,62 +960,116 @@ export default function App() {
           <TabBar />
 
           {/* Find bar */}
-          {findBarVisible && <FindBar />}
+          {findBarVisible && <FindBar editorApplyRef={applyExternalRef} />}
 
-          {/* Editor / viewer area — always visible in split-pane */}
-          <div className="editor-container">
-            {activeTab ? (() => {
-              const ext = getFileExt(activeTab.filePath);
-              if (IMAGE_EXTS.has(ext)) {
-                return <ImageViewer key={activeTab.id} filePath={activeTab.filePath!} />;
-              }
-              if (ext === "pdf") {
-                return <PdfViewer key={activeTab.id} filePath={activeTab.filePath!} />;
-              }
-              if (ext === "txt") {
-                return <TxtViewer key={activeTab.id} content={activeTab.content} />;
-              }
-              if (CODE_EXTS.has(ext)) {
+          {/* Horizontal split: editor (left) + terminal (right) */}
+          <div className="split-area">
+            {/* Editor / viewer area */}
+            <div className="editor-container">
+              {activeTab ? (() => {
+                const ext = getFileExt(activeTab.filePath);
+                if (IMAGE_EXTS.has(ext)) {
+                  return <ImageViewer key={activeTab.id} filePath={activeTab.filePath!} />;
+                }
+                if (ext === "pdf") {
+                  return <PdfViewer key={activeTab.id} filePath={activeTab.filePath!} />;
+                }
+                if (ext === "txt") {
+                  return <TxtViewer key={activeTab.id} content={activeTab.content} />;
+                }
+                if (CODE_EXTS.has(ext)) {
+                  return (
+                    <CodeEditor
+                      key={`${activeTab.id}_${activeTab.externalVersion ?? 0}`}
+                      filePath={activeTab.filePath}
+                      initialContent={activeTab.content}
+                      onChange={handleEditorChange}
+                    />
+                  );
+                }
                 return (
-                  <CodeEditor
+                  <MilkdownEditor
                     key={activeTab.id}
-                    filePath={activeTab.filePath}
+                    tabId={activeTab.id}
                     initialContent={activeTab.content}
                     onChange={handleEditorChange}
+                    savedEditorState={tabEditorStatesRef.current.get(activeTab.id)}
+                    onViewUnmount={(state, tid) => {
+                      tabEditorStatesRef.current.set(tid, state);
+                    }}
+                    onEditorApplyExternal={(apply) => {
+                      applyExternalRef.current = apply;
+                    }}
                   />
                 );
-              }
-              return (
-                <MilkdownEditor
-                  key={activeTab.id}
-                  initialContent={activeTab.content}
-                  onChange={handleEditorChange}
-                />
-              );
-            })() : (
-              <div className="flex h-full flex-col items-center justify-center gap-2" style={{ color: "var(--status-text)" }}>
-                <p className="text-sm font-medium">No file open</p>
-                <p className="text-xs">
-                  Press{" "}
-                  <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-mono">
-                    ⌘T
-                  </kbd>{" "}
-                  to create a new tab
-                </p>
-              </div>
-            )}
-            {activeTab && getFileExt(activeTab.filePath) === "md" && (
-              <StatusBar content={activeTab.content} onToggleTerminal={toggleTerminal} />
-            )}
-          </div>
+              })() : (
+                <div className="flex h-full flex-col items-center justify-center gap-2" style={{ color: "var(--status-text)" }}>
+                  <p className="text-sm font-medium">No file open</p>
+                  <p className="text-xs">
+                    Press{" "}
+                    <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-mono">
+                      ⌘T
+                    </kbd>{" "}
+                    to create a new tab
+                  </p>
+                </div>
+              )}
+              {activeTab && getFileExt(activeTab.filePath) === "md" && (
+                <StatusBar content={activeTab.content} />
+              )}
+            </div>
 
-          {/* Terminal — xterm.js + portable-pty */}
-          <TerminalView
-            visible={terminalOpen}
-            projectPath={fileTree?.path ?? null}
-            focusRef={terminalFocusRef}
-            onProjectChange={async (path) => {
+            {/* Resize divider — drag to adjust terminal width */}
+            {terminalOpen && (
+              <div
+                className="group"
+                style={{
+                  width: 4,
+                  flexShrink: 0,
+                  cursor: "ew-resize",
+                  background: "hsl(var(--border))",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  const startX = e.clientX;
+                  const saved = useWorkspaceStore.getState().terminalWidth;
+                  const startWidth = saved > 0
+                    ? saved
+                    : (document.querySelector(".terminal-view-container") as HTMLElement | null)?.offsetWidth
+                      ?? Math.floor(window.innerWidth * 0.4);
+                  document.body.style.userSelect = "none";
+                  document.body.style.cursor = "ew-resize";
+                  function onMove(ev: MouseEvent) {
+                    const delta = ev.clientX - startX;
+                    const next = Math.max(200, Math.min(window.innerWidth * 0.6, startWidth - delta));
+                    setTerminalWidth(next);
+                  }
+                  function onUp() {
+                    document.removeEventListener("mousemove", onMove);
+                    document.removeEventListener("mouseup", onUp);
+                    document.body.style.userSelect = "";
+                    document.body.style.cursor = "";
+                  }
+                  document.addEventListener("mousemove", onMove);
+                  document.addEventListener("mouseup", onUp);
+                }}
+              />
+            )}
+
+            {/* Terminal — xterm.js + portable-pty */}
+            <TerminalView
+              visible={terminalOpen}
+              projectPath={fileTree?.path ?? null}
+              focusRef={terminalFocusRef}
+              onProjectChange={async (path) => {
               const { invoke } = await import("@tauri-apps/api/core");
+
+              // Clean up previous project's terminal session registry entry
+              const prevPath = useAppStore.getState().fileTree?.path;
+              if (prevPath) clearTerminalSessionRegistry(prevPath);
 
               // Save current project's last active tab
               const state = useAppStore.getState();
@@ -896,13 +1107,14 @@ export default function App() {
                       id, filePath: lastFile,
                       projectPath: path,
                       title: lastFile.split("/").pop() ?? "file",
-                      content, isDirty: false,
+                      content, isDirty: false, externalVersion: 0,
                     });
                   } catch { /* file deleted — skip */ }
                 }
               }
             }}
           />
+          </div>{/* end split-area */}
         </div>
 
         {/* Global overlays */}

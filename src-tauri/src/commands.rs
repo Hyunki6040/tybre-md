@@ -1,8 +1,17 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::command;
+
+/// Managed state: file path passed at launch (double-click / OS file association)
+pub struct StartupFile(pub Mutex<Option<String>>);
+
+#[command]
+pub fn get_startup_file(state: tauri::State<StartupFile>) -> Option<String> {
+    state.0.lock().unwrap().take()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -530,7 +539,15 @@ pub struct WorkspaceState {
     pub term_yolo_mode: bool,
     #[serde(default)]
     pub terminal_open: bool,
+    #[serde(default = "default_terminal_width")]
+    pub terminal_width: u32,
+    #[serde(default)]
+    pub term_pre_command_enabled: bool,
+    #[serde(default)]
+    pub term_pre_command: String,
 }
+
+fn default_terminal_width() -> u32 { 0 }
 
 impl Default for WorkspaceState {
     fn default() -> Self {
@@ -542,6 +559,9 @@ impl Default for WorkspaceState {
             term_auto_claude: false,
             term_yolo_mode: false,
             terminal_open: false,
+            terminal_width: 0,
+            term_pre_command_enabled: false,
+            term_pre_command: String::new(),
         }
     }
 }
