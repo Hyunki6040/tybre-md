@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -23,6 +24,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useSwitchProject, getOpenProjects, GROUP_HUES, type OpenProject } from "@/hooks/useSwitchProject";
+import { FilePreviewPopup } from "@/components/FilePreviewPopup";
+
+// ── FEATURE: Explorer hover file preview (DO NOT REMOVE) ───────────────────
+// FilePreviewPopup is rendered via createPortal in FileTreeNode on mouse hover.
+// The following are intentionally added to FileTreeNode:
+//   - previewAnchor state, rowRef, hoverTimer, hideTimer refs
+//   - handleMouseEnter / handleMouseLeave functions
+//   - ref={rowRef}, onMouseEnter, onMouseLeave props on the row div
+//   - createPortal(<FilePreviewPopup ... />, document.body) at the return
+// ──────────────────────────────────────────────────────────────────────────
+import { IMAGE_EXTS, OPENABLE_EXTS } from "@/lib/fileTypes";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -51,10 +63,85 @@ export function Sidebar() {
     fileTree, setFileTree, addTab,
     recentDirs, addRecentDir, newFileRequestedAt,
     tabs,
+    requestCloseTerminalSessions,
+    revealPathSignal,
   } = useAppStore();
   const switchProject = useSwitchProject();
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
+
+  // ── Reveal path from terminal click ──────────────────────────────────────
+  const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!revealPathSignal) return;
+    const { path } = revealPathSignal;
+
+    // Expand all ancestor directories (not the target itself)
+    const parts = path.split("/").filter(Boolean);
+    const ancestors: string[] = [];
+    for (let i = 1; i < parts.length; i++) {
+      ancestors.push("/" + parts.slice(0, i).join("/"));
+    }
+
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      ancestors.forEach((a) => next.add(a));
+      return next;
+    });
+
+    // Reset and start heartbeat
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    setHighlightedPath(path);
+    highlightTimerRef.current = setTimeout(() => setHighlightedPath(null), 3100);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealPathSignal]);
+
+  // Auto-expand root dir when project loads (startup restore or project switch)
+  useEffect(() => {
+    if (!fileTree?.path) return;
+    setExpandedDirs((prev) => {
+      if (prev.has(fileTree.path)) return prev;
+      const next = new Set(prev);
+      next.add(fileTree.path);
+      return next;
+    });
+  }, [fileTree?.path]);
+
+  // ── File tree auto-refresh on create/delete ────────────────────────────────
+  useEffect(() => {
+    if (!fileTree) return;
+
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    async function setup() {
+      const { listen } = await import("@tauri-apps/api/event");
+      const { invoke } = await import("@tauri-apps/api/core");
+
+      const unlistenFn = await listen("file-tree-changed", async () => {
+        if (!fileTree) return;
+        try {
+          // Refresh file tree while preserving expanded directories
+          const tree = await invoke<FileEntry>("open_folder", { path: fileTree.path });
+          setFileTree(tree);
+        } catch (err) {
+          console.error("Failed to refresh file tree:", err);
+        }
+      });
+
+      if (cancelled) unlistenFn();
+      else unlisten = unlistenFn;
+    }
+
+    setup().catch(console.error);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [fileTree?.path, setFileTree]);
   const [claudeDirs, setClaudeDirs] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -155,6 +242,58 @@ export function Sidebar() {
       addRecentDir(path);
       setExpandedDirs(new Set([path]));
       setFolderMenuOpen(false);
+
+      // Load workspace settings (sidebar, terminal, etc.)
+      await useWorkspaceStore.getState().loadWorkspace(path);
+
+      // Restore saved editor tabs + terminal session names from tabs.json
+      const savedTabs = await invoke<{
+        open_tabs: string[];
+        active_tab: string | null;
+        terminal_session_names: string[];
+      }>("load_project_tabs", { projectPath: path }).catch(() => null);
+
+      if (savedTabs && savedTabs.open_tabs.length > 0) {
+        // Set pending terminal session names for TerminalView to consume
+        if (savedTabs.terminal_session_names.length > 0) {
+          useWorkspaceStore.getState().setPendingTerminalSessionNames(
+            savedTabs.terminal_session_names
+          );
+        }
+
+        // Restore editor tabs
+        let activeTabId: string | null = null;
+        for (const filePath of savedTabs.open_tabs) {
+          const existing = useAppStore.getState().tabs.find(
+            (t) => t.filePath === filePath && t.projectPath === path
+          );
+          if (existing) {
+            if (filePath === savedTabs.active_tab) activeTabId = existing.id;
+            continue;
+          }
+          try {
+            const fileContent = await invoke<string>("read_file", { path: filePath });
+            const id = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            useAppStore.getState().addTab({
+              id,
+              filePath,
+              projectPath: path,
+              title: filePath.split("/").pop() ?? "file",
+              content: fileContent,
+              isDirty: false,
+              externalVersion: 0,
+            });
+            if (filePath === savedTabs.active_tab || !activeTabId) activeTabId = id;
+          } catch {
+            // File deleted — skip
+          }
+        }
+
+        // Activate the saved active tab
+        if (activeTabId) {
+          useAppStore.getState().setActiveTab(activeTabId);
+        }
+      }
     } catch (err) {
       console.error("open_folder failed:", err);
     }
@@ -163,6 +302,50 @@ export function Sidebar() {
   async function handleOpenProjectClick(path: string) {
     await switchProject(path);
     setExpandedDirs(new Set([path]));
+  }
+
+  async function handleCloseProject(projectPath: string) {
+
+    // 1. Collect open editor tabs for this project
+    const { tabs: currentTabs, activeTabId } = useAppStore.getState();
+    const projectTabs = currentTabs.filter((t) => t.projectPath === projectPath);
+    const openTabPaths = projectTabs
+      .map((t) => t.filePath)
+      .filter((p): p is string => p !== null);
+    const activeTabFilePath =
+      currentTabs.find((t) => t.id === activeTabId && t.projectPath === projectPath)
+        ?.filePath ?? null;
+
+    // 2. Collect terminal session names from the registry
+    const { getTerminalSessionNames } = await import("@/components/TerminalView");
+    const sessionNames = getTerminalSessionNames(projectPath);
+
+    // 3. Save to tabs.json
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("save_project_tabs", {
+        projectPath,
+        tabs: {
+          open_tabs: openTabPaths,
+          active_tab: activeTabFilePath,
+          terminal_session_names: sessionNames,
+        },
+      });
+    } catch (err) {
+      console.error("Failed to save project tabs:", err);
+    }
+
+    // 4. Close all editor tabs for this project
+    const snap = useAppStore.getState();
+    snap.tabs
+      .filter((t) => t.projectPath === projectPath)
+      .forEach((t) => useAppStore.getState().closeTab(t.id));
+
+    // 5. Signal TerminalView to close all sessions for this project
+    requestCloseTerminalSessions(projectPath);
+
+    // 6. Clear the file tree
+    setFileTree(null);
   }
 
   async function browseFolder() {
@@ -210,7 +393,7 @@ export function Sidebar() {
 
     // 4. Add tab + refresh tree
     const id = `tab-${Date.now()}`;
-    addTab({ id, filePath: newPath, projectPath: fileTree.path, title: candidate, content: "", isDirty: false });
+    addTab({ id, filePath: newPath, projectPath: fileTree.path, title: candidate, content: "", isDirty: false, externalVersion: 0 });
     const tree2 = await invoke<FileEntry>("open_folder", { path: fileTree.path });
     setFileTree(tree2);
 
@@ -222,14 +405,21 @@ export function Sidebar() {
       return next;
     });
 
-    // 6. Start inline rename
+    // 6. Start inline rename (show full filename with extension; select name part only)
     setIsNewFile(true);
     setRenamingPath(newPath);
-    setRenameValue(candidate.replace(/\.md$/, ""));
+    setRenameValue(candidate);
     setRenameExt("");
     setTimeout(() => {
-      renameInputRef.current?.focus();
-      renameInputRef.current?.select();
+      const input = renameInputRef.current;
+      if (!input) return;
+      input.focus();
+      const dotIdx = input.value.lastIndexOf(".");
+      if (dotIdx > 0) {
+        input.setSelectionRange(0, dotIdx);
+      } else {
+        input.select();
+      }
     }, 60);
   }
 
@@ -239,7 +429,7 @@ export function Sidebar() {
 
     const dir = oldPath.split("/").slice(0, -1).join("/");
     const newName = isNewFile
-      ? (trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`)
+      ? trimmed
       : `${trimmed}${renameExt}`;
     const newPath = `${dir}/${newName}`;
 
@@ -378,6 +568,7 @@ export function Sidebar() {
               renameInputRef={renameInputRef}
               selectedPath={selectedPath}
               onSelect={setSelectedPath}
+              highlightedPath={highlightedPath}
               onStartRename={(path, name) => {
                 setIsNewFile(false);
                 setRenamingPath(path);
@@ -506,6 +697,7 @@ export function Sidebar() {
         projects={getOpenProjects(tabs)}
         activePath={fileTree?.path ?? null}
         onSwitch={handleOpenProjectClick}
+        onClose={handleCloseProject}
       />
 
       {/* ── Bottom: folder dropup ── */}
@@ -648,11 +840,16 @@ function OpenProjectsPanel({
   projects,
   activePath,
   onSwitch,
+  onClose,
 }: {
   projects: OpenProject[];
   activePath: string | null;
   onSwitch: (path: string) => void;
+  onClose: (path: string) => void;
 }) {
+  const [hoveredPath, setHoveredPath] = useState<string | null>(null);
+  const terminalDoneProjects = useAppStore((s) => s.terminalDoneProjects);
+
   if (projects.length === 0) return null;
   return (
     <div className="shrink-0">
@@ -665,35 +862,67 @@ function OpenProjectsPanel({
       {projects.map((project, idx) => {
         const hue = GROUP_HUES[idx % GROUP_HUES.length];
         const isActive = project.path === activePath;
+        const isHovered = hoveredPath === project.path;
         return (
-          <button
+          <div
             key={project.key}
             className={cn(
-              "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
+              "group flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
               "hover:bg-accent/50",
               isActive ? "text-foreground font-medium" : "text-muted-foreground"
             )}
             style={{
-              background: isActive
-                ? `hsl(${hue} 55% 52% / 0.1)`
-                : undefined,
+              background: isActive ? `hsl(${hue} 55% 52% / 0.1)` : undefined,
               borderLeft: `2px solid hsl(${hue} 55% 52% / ${isActive ? 0.7 : 0.3})`,
             }}
-            onClick={() => onSwitch(project.path)}
-            title={project.path}
+            onMouseEnter={() => setHoveredPath(project.path)}
+            onMouseLeave={() => setHoveredPath(null)}
           >
-            <FolderOpen
-              className="h-3.5 w-3.5 shrink-0"
-              style={{ color: `hsl(${hue} 55% 45%)` }}
-            />
-            <span className="flex-1 truncate">{project.name}</span>
-            <span
-              className="shrink-0 font-mono text-[9px] opacity-70 select-none"
-              style={{ color: `hsl(${hue} 40% 50%)` }}
+            {/* Click area for switching */}
+            <button
+              className="flex flex-1 min-w-0 items-center gap-2 text-left"
+              onClick={() => onSwitch(project.path)}
+              title={project.path}
             >
-              ⌃{idx + 1}
-            </span>
-          </button>
+              <FolderOpen
+                className="h-3.5 w-3.5 shrink-0"
+                style={{ color: `hsl(${hue} 55% 45%)` }}
+              />
+              <span className="flex-1 truncate">{project.name}</span>
+            </button>
+            {/* Shortcut badge ↔ close button ↔ green done dot */}
+            {(() => {
+              const hasDone = !isActive && terminalDoneProjects.has(project.path);
+              if (isHovered) {
+                return (
+                  <button
+                    className="shrink-0 flex items-center justify-center w-4 h-4 rounded hover:text-foreground transition-colors"
+                    style={{ color: `hsl(${hue} 40% 50%)` }}
+                    onClick={(e) => { e.stopPropagation(); onClose(project.path); }}
+                    title="Close project"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                );
+              }
+              if (hasDone) {
+                return (
+                  <span
+                    className="shrink-0 w-2 h-2 rounded-full bg-green-500"
+                    title="Terminal task completed"
+                  />
+                );
+              }
+              return (
+                <span
+                  className="shrink-0 font-mono text-[9px] opacity-70 select-none w-4 text-center"
+                  style={{ color: `hsl(${hue} 40% 50%)` }}
+                >
+                  ⌃{idx + 1}
+                </span>
+              );
+            })()}
+          </div>
         );
       })}
     </div>
@@ -775,10 +1004,9 @@ interface FileTreeNodeProps {
   onCommitRename?: (path: string) => void;
   onCancelRename?: (path: string) => void;
   onContextMenu?: (e: React.MouseEvent, path: string, isDir: boolean, name: string) => void;
+  highlightedPath?: string | null;
 }
 
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
-const OPENABLE_EXTS = new Set(["md", "txt", "pdf", ...IMAGE_EXTS]);
 
 function fileExt(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
@@ -788,7 +1016,7 @@ function FileTreeNode({
   entry, expandedDirs, onToggleDir, depth, isRoot,
   renamingPath, renameValue, renameExt, renameInputRef,
   selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
-  onContextMenu,
+  onContextMenu, highlightedPath,
 }: FileTreeNodeProps) {
   const { addTab, setActiveTab, tabs, fileTree, activeTabId } = useAppStore();
   const isExpanded = expandedDirs.has(entry.path);
@@ -805,6 +1033,47 @@ function FileTreeNode({
   useEffect(() => {
     if (isExpanded) setHasBeenExpanded(true);
   }, [isExpanded]);
+
+
+  // ── Hover preview ──────────────────────────────────────────────────────────
+  const [previewAnchor, setPreviewAnchor] = useState<DOMRect | null>(null);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimer.current) clearTimeout(hoverTimer.current);
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    };
+  }, []);
+
+  // Scroll highlighted item into view after directory expand animation
+  useEffect(() => {
+    if (entry.path !== highlightedPath) return;
+    const t = setTimeout(() => {
+      rowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [entry.path, highlightedPath]);
+
+  function handleMouseEnter() {
+    if (entry.is_dir) return;
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hoverTimer.current = setTimeout(() => {
+      const rect = rowRef.current?.getBoundingClientRect();
+      if (rect) {
+        setPreviewAnchor(rect);
+        setPreviewVisible(true);
+      }
+    }, 500);
+  }
+
+  function handleMouseLeave() {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hideTimer.current = setTimeout(() => setPreviewVisible(false), 100);
+  }
 
   async function handleFileClick() {
     if (entry.is_dir) {
@@ -823,10 +1092,10 @@ function FileTreeNode({
       const { invoke } = await import("@tauri-apps/api/core");
       const id = `tab-${Date.now()}`;
       if (isImage || isPdf) {
-        addTab({ id, filePath: entry.path, projectPath: fileTree?.path ?? null, title: entry.name, content: "", isDirty: false });
+        addTab({ id, filePath: entry.path, projectPath: fileTree?.path ?? null, title: entry.name, content: "", isDirty: false, externalVersion: 0 });
       } else {
         const content = await invoke<string>("read_file", { path: entry.path });
-        addTab({ id, filePath: entry.path, projectPath: fileTree?.path ?? null, title: entry.name, content, isDirty: false });
+        addTab({ id, filePath: entry.path, projectPath: fileTree?.path ?? null, title: entry.name, content, isDirty: false, externalVersion: 0 });
       }
     } catch (err) {
       console.error("Failed to open file:", err);
@@ -845,7 +1114,7 @@ function FileTreeNode({
     expandedDirs, onToggleDir,
     renamingPath, renameValue, renameExt, renameInputRef,
     selectedPath, onSelect, onStartRename, onRenameChange, onCommitRename, onCancelRename,
-    onContextMenu,
+    onContextMenu, highlightedPath,
   };
 
   // ── Root directory header ──
@@ -896,6 +1165,7 @@ function FileTreeNode({
   return (
     <div>
       <div
+        ref={rowRef}
         className={cn(
           "flex items-center gap-1.5 py-[3px] pr-2 text-sm transition-colors",
           isOpenable || entry.is_dir ? "cursor-pointer hover:bg-accent hover:text-accent-foreground" : "cursor-default opacity-40",
@@ -904,12 +1174,15 @@ function FileTreeNode({
           !isActiveFile && isOpenable && "text-foreground",
           !isOpenable && !entry.is_dir && "text-muted-foreground",
           selectedPath === entry.path && !isActiveFile && "bg-accent/20",
+          entry.path === highlightedPath && "sidebar-heartbeat",
         )}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
         onClick={() => {
           onSelect?.(entry.path);
           handleFileClick();
         }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -945,13 +1218,11 @@ function FileTreeNode({
               ? "text-muted-foreground"
               : isActiveFile
                 ? "text-primary"
-                : isMarkdown
-                  ? "text-primary/60"
-                  : isImage
-                    ? "text-violet-500/70"
-                    : isPdf
-                      ? "text-red-500/70"
-                      : "text-muted-foreground/60"
+                : isImage
+                  ? "text-violet-500/70"
+                  : isPdf
+                    ? "text-red-500/70"
+                    : "text-muted-foreground/60"
           )}
         />
         {isRenaming ? (
@@ -1005,6 +1276,18 @@ function FileTreeNode({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Hover preview popup — portal renders outside ScrollArea to avoid overflow clipping */}
+      {previewAnchor && !entry.is_dir && createPortal(
+        <FilePreviewPopup
+          path={entry.path}
+          ext={ext}
+          anchorRect={previewAnchor}
+          visible={previewVisible}
+          onHidden={() => setPreviewAnchor(null)}
+        />,
+        document.body
       )}
     </div>
   );

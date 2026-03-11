@@ -7,7 +7,8 @@ use tauri::{command, AppHandle, Emitter};
 pub struct WatcherState(pub Arc<Mutex<Option<RecommendedWatcher>>>);
 
 /// Start watching a directory for file changes.
-/// Emits "file-changed" events with the absolute path of the changed file.
+/// Emits "file-changed" events for modifications.
+/// Emits "file-tree-changed" events for create/delete operations.
 #[command]
 pub fn start_watching(
     state: tauri::State<'_, WatcherState>,
@@ -24,23 +25,25 @@ pub fn start_watching(
         move |result: notify::Result<Event>| {
             let Ok(event) = result else { return };
 
-            // Only emit for Modify or Create events on .md / .txt / .markdown files
-            let is_content_change = matches!(
-                event.kind,
-                EventKind::Modify(_) | EventKind::Create(_)
-            );
-            if !is_content_change {
-                return;
-            }
-
-            for path in &event.paths {
-                let Some(ext) = path.extension() else { continue };
-                let ext_lower = ext.to_string_lossy().to_lowercase();
-                if !matches!(ext_lower.as_str(), "md" | "txt" | "markdown") {
-                    continue;
+            match event.kind {
+                EventKind::Create(_) | EventKind::Remove(_) => {
+                    // Emit file-tree-changed event for any file/folder create/delete
+                    // (triggers file tree refresh in frontend)
+                    let _ = app_clone.emit("file-tree-changed", ());
                 }
-                let path_str = path.to_string_lossy().to_string();
-                let _ = app_clone.emit("file-changed", &path_str);
+                EventKind::Modify(_) => {
+                    // Emit file-changed event only for modifications to text files
+                    for path in &event.paths {
+                        let Some(ext) = path.extension() else { continue };
+                        let ext_lower = ext.to_string_lossy().to_lowercase();
+                        if !matches!(ext_lower.as_str(), "md" | "txt" | "markdown") {
+                            continue;
+                        }
+                        let path_str = path.to_string_lossy().to_string();
+                        let _ = app_clone.emit("file-changed", &path_str);
+                    }
+                }
+                _ => {}
             }
         },
         Config::default().with_poll_interval(Duration::from_millis(500)),
